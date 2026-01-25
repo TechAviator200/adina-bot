@@ -17,10 +17,21 @@ class EmailDraft(TypedDict):
     body: str
 
 
-# Load knowledge pack at module level
+# Load knowledge pack at module level (optional)
 _knowledge_pack_path = Path(__file__).parent.parent / "knowledge_pack.json"
-with open(_knowledge_pack_path) as f:
-    KNOWLEDGE_PACK = json.load(f)
+try:
+    with open(_knowledge_pack_path) as f:
+        KNOWLEDGE_PACK = json.load(f)
+except FileNotFoundError:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.warning(f"knowledge_pack.json not found at {_knowledge_pack_path}, using empty fallback")
+    KNOWLEDGE_PACK = {}
+except Exception as e:
+    import logging
+    logger = logging.getLogger(__name__)
+    logger.error(f"Error loading knowledge_pack.json: {e}, using empty fallback")
+    KNOWLEDGE_PACK = {}
 
 
 # Industry to relevant problems/services mapping
