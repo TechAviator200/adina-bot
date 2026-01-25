@@ -10,7 +10,7 @@ services:
       - key: DATABASE_URL
         fromDatabase:
           name: adina-db
-          property: connectionURI
+          property: connectionString
       - key: CREDENTIALS_DIR
         value: /data/credentials
       - key: DEMO_MODE
