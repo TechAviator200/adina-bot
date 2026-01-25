@@ -1,6 +1,7 @@
 services:
   - type: web
     name: adina-bot-backend
+    plan: free
     runtime: docker
     rootDir: backend
     dockerfilePath: ./Dockerfile
@@ -11,8 +12,6 @@ services:
         fromDatabase:
           name: adina-db
           property: connectionString
-      - key: CREDENTIALS_DIR
-        value: /data/credentials
       - key: DEMO_MODE
         value: "false"
       - key: PORT
@@ -23,10 +22,6 @@ services:
         sync: false
       - key: GOOGLE_CSE_CX
         sync: false
-    disk:
-      name: credentials
-      mountPath: /data/credentials
-      sizeGB: 1
     healthCheckPath: /health
 
 databases:
