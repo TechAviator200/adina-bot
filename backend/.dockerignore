@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.env
+adina.db
+credentials/
+scripts/
+.git/
+.gitignore
+README.md
+runtime.txt

@@ -1,0 +1,32 @@
+import apiClient from './client'
+import type { GmailStatus, GmailSendResponse } from './types'
+
+export interface AppConfig {
+  demo_mode: boolean
+  oauth_redirect_uri: string
+}
+
+export async function getAppConfig(): Promise<AppConfig> {
+  const { data } = await apiClient.get<AppConfig>('/api/config')
+  return data
+}
+
+export async function getGmailStatus(): Promise<GmailStatus> {
+  const { data } = await apiClient.get<GmailStatus>('/api/gmail/status')
+  return data
+}
+
+export async function connectGmail(): Promise<GmailStatus> {
+  const { data } = await apiClient.post<GmailStatus>('/api/gmail/connect')
+  return data
+}
+
+export async function disconnectGmail(): Promise<{ success: boolean }> {
+  const { data } = await apiClient.post<{ success: boolean }>('/api/gmail/disconnect')
+  return data
+}
+
+export async function sendEmail(leadId: number): Promise<GmailSendResponse> {
+  const { data } = await apiClient.post<GmailSendResponse>(`/api/gmail/send/${leadId}`)
+  return data
+}

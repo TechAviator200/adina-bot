@@ -1,0 +1,376 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ADINA Operator Console</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; color: #333; padding: 20px; }
+        h1 { margin-bottom: 16px; font-size: 24px; }
+        .status-bar { background: #fff; border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin-bottom: 16px; display: flex; align-items: center; gap: 16px; }
+        .status-dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+        .status-dot.connected { background: #22c55e; }
+        .status-dot.disconnected { background: #ef4444; }
+        .filters { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+        .filters button { padding: 6px 14px; border: 1px solid #ddd; border-radius: 4px; background: #fff; cursor: pointer; font-size: 13px; }
+        .filters button.active { background: #2563eb; color: #fff; border-color: #2563eb; }
+        table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid #ddd; border-radius: 6px; overflow: hidden; font-size: 13px; }
+        th, td { padding: 8px 10px; text-align: left; border-bottom: 1px solid #eee; }
+        th { background: #f9f9f9; font-weight: 600; }
+        tr:last-child td { border-bottom: none; }
+        .btn { padding: 4px 8px; border: 1px solid #ddd; border-radius: 3px; background: #fff; cursor: pointer; font-size: 12px; margin-right: 3px; }
+        .btn:hover { background: #f0f0f0; }
+        .btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+        .btn-primary:hover { background: #1d4ed8; }
+        .btn-success { background: #22c55e; color: #fff; border-color: #22c55e; }
+        .btn-success:hover { background: #16a34a; }
+        .btn-warning { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+        .btn-warning:hover { background: #d97706; }
+        .btn-danger { background: #ef4444; color: #fff; border-color: #ef4444; }
+        .btn-danger:hover { background: #dc2626; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .toast { position: fixed; top: 20px; right: 20px; padding: 12px 20px; border-radius: 6px; color: #fff; font-size: 14px; z-index: 1000; max-width: 400px; animation: fadeIn 0.2s; }
+        .toast.success { background: #22c55e; }
+        .toast.error { background: #ef4444; }
+        .toast.info { background: #2563eb; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.4); z-index: 500; justify-content: center; align-items: center; }
+        .modal-overlay.open { display: flex; }
+        .modal { background: #fff; border-radius: 8px; padding: 24px; width: 600px; max-width: 90vw; max-height: 80vh; overflow-y: auto; }
+        .modal h2 { margin-bottom: 16px; font-size: 18px; }
+        .modal label { display: block; font-weight: 600; margin-bottom: 4px; font-size: 13px; }
+        .modal input, .modal textarea { width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 4px; font-size: 13px; margin-bottom: 12px; font-family: inherit; }
+        .modal textarea { min-height: 150px; resize: vertical; }
+        .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; }
+        .score-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: 600; }
+        .score-high { background: #dcfce7; color: #166534; }
+        .score-mid { background: #fef9c3; color: #854d0e; }
+        .score-low { background: #fee2e2; color: #991b1b; }
+        .status-badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; text-transform: uppercase; }
+        .status-new { background: #e0e7ff; color: #3730a3; }
+        .status-qualified { background: #dbeafe; color: #1e40af; }
+        .status-drafted { background: #fef3c7; color: #92400e; }
+        .status-approved { background: #d1fae5; color: #065f46; }
+        .status-sent { background: #f3e8ff; color: #6b21a8; }
+        .email-field { display: flex; gap: 6px; align-items: center; }
+        .email-field input { padding: 4px 6px; border: 1px solid #ddd; border-radius: 3px; font-size: 12px; width: 160px; }
+        .count-info { font-size: 13px; color: #666; }
+        .upload-section { margin-bottom: 16px; }
+    </style>
+</head>
+<body>
+    <h1>ADINA Operator Console</h1>
+
+    <!-- Status Bar -->
+    <div class="status-bar">
+        <div>
+            <span class="status-dot disconnected" id="gmail-dot"></span>
+            <span id="gmail-status">Checking Gmail...</span>
+        </div>
+        <div class="count-info" id="daily-count"></div>
+        <div class="count-info" id="lead-count"></div>
+        <div style="margin-left:auto">
+            <button class="btn btn-primary" id="connect-gmail-btn" style="display:none" onclick="connectGmail()">Connect Gmail</button>
+        </div>
+    </div>
+
+    <!-- Upload -->
+    <div class="upload-section">
+        <form id="upload-form" onsubmit="uploadCSV(event)" style="display:flex;gap:8px;align-items:center;">
+            <input type="file" id="csv-file" accept=".csv" style="font-size:13px;">
+            <button type="submit" class="btn btn-primary">Upload CSV</button>
+        </form>
+    </div>
+
+    <!-- Filters -->
+    <div class="filters">
+        <button class="active" onclick="setFilter('all')">All</button>
+        <button onclick="setFilter('new')">New</button>
+        <button onclick="setFilter('qualified')">Qualified</button>
+        <button onclick="setFilter('drafted')">Drafted</button>
+        <button onclick="setFilter('approved')">Approved</button>
+        <button onclick="setFilter('sent')">Sent</button>
+    </div>
+
+    <!-- Leads Table -->
+    <table>
+        <thead>
+            <tr>
+                <th>ID</th>
+                <th>Company</th>
+                <th>Industry</th>
+                <th>Location</th>
+                <th>Score</th>
+                <th>Status</th>
+                <th>Contact Email</th>
+                <th>Actions</th>
+            </tr>
+        </thead>
+        <tbody id="leads-body">
+            <tr><td colspan="8" style="text-align:center;padding:20px;">Loading...</td></tr>
+        </tbody>
+    </table>
+
+    <!-- Draft Preview Modal -->
+    <div class="modal-overlay" id="draft-modal">
+        <div class="modal">
+            <h2>Email Draft — <span id="modal-company"></span></h2>
+            <label>To</label>
+            <input type="email" id="modal-to" placeholder="contact@company.com">
+            <label>Subject</label>
+            <input type="text" id="modal-subject" readonly>
+            <label>Body</label>
+            <textarea id="modal-body" readonly></textarea>
+            <div class="modal-actions">
+                <button class="btn" onclick="closeModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const API = '';
+        let currentFilter = 'all';
+        let leads = [];
+
+        // Toast notifications
+        function showToast(msg, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = `toast ${type}`;
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 4000);
+        }
+
+        // API helpers
+        async function api(path, opts = {}) {
+            try {
+                const res = await fetch(API + path, opts);
+                if (!res.ok) {
+                    const err = await res.json().catch(() => ({}));
+                    throw new Error(err.detail || `HTTP ${res.status}`);
+                }
+                return await res.json();
+            } catch (e) {
+                showToast(e.message, 'error');
+                throw e;
+            }
+        }
+
+        // Gmail status
+        async function checkGmail() {
+            try {
+                const data = await api('/api/gmail/status');
+                const dot = document.getElementById('gmail-dot');
+                const status = document.getElementById('gmail-status');
+                const btn = document.getElementById('connect-gmail-btn');
+                if (data.connected) {
+                    dot.className = 'status-dot connected';
+                    status.textContent = `Gmail: ${data.email || 'connected'}`;
+                    btn.style.display = 'none';
+                } else {
+                    dot.className = 'status-dot disconnected';
+                    status.textContent = 'Gmail: not connected';
+                    if (data.error) status.textContent += ` (${data.error})`;
+                    btn.style.display = 'inline-block';
+                }
+            } catch (e) {}
+        }
+
+        async function checkDailyCount() {
+            try {
+                const data = await api('/api/gmail/sent/today');
+                document.getElementById('daily-count').textContent = `Sent today: ${data.sent}/${data.limit}`;
+            } catch (e) {}
+        }
+
+        async function connectGmail() {
+            try {
+                const data = await api('/api/gmail/connect', { method: 'POST', headers: {'Content-Type': 'application/json'}, body: '{}' });
+                if (data.auth_url) {
+                    window.open(data.auth_url, '_blank');
+                    showToast('Authorize in the opened window, then refresh this page.', 'info');
+                } else if (data.connected) {
+                    showToast('Gmail connected!', 'success');
+                    checkGmail();
+                }
+            } catch (e) {}
+        }
+
+        // Leads
+        async function loadLeads() {
+            try {
+                leads = await api('/api/leads');
+                renderLeads();
+                document.getElementById('lead-count').textContent = `Total leads: ${leads.length}`;
+            } catch (e) {}
+        }
+
+        function setFilter(f) {
+            currentFilter = f;
+            document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+            event.target.classList.add('active');
+            renderLeads();
+        }
+
+        function renderLeads() {
+            const filtered = currentFilter === 'all' ? leads : leads.filter(l => l.status === currentFilter);
+            const tbody = document.getElementById('leads-body');
+
+            if (filtered.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:20px;color:#999;">No leads found</td></tr>';
+                return;
+            }
+
+            tbody.innerHTML = filtered.map(lead => `
+                <tr>
+                    <td>${lead.id}</td>
+                    <td><strong>${esc(lead.company)}</strong></td>
+                    <td>${esc(lead.industry || '')}</td>
+                    <td>${esc(lead.location || '—')}</td>
+                    <td>${scoreBadge(lead.score)}</td>
+                    <td><span class="status-badge status-${lead.status}">${lead.status}</span></td>
+                    <td>
+                        <div class="email-field">
+                            <input type="email" value="${esc(lead.contact_email || '')}" id="email-${lead.id}" placeholder="email@co.com">
+                            <button class="btn" onclick="saveEmail(${lead.id})">Save</button>
+                        </div>
+                    </td>
+                    <td style="white-space:nowrap">
+                        <button class="btn" onclick="scoreLead(${lead.id})" ${lead.status === 'sent' ? 'disabled' : ''}>Score</button>
+                        <button class="btn btn-primary" onclick="draftLead(${lead.id})" ${lead.status === 'sent' ? 'disabled' : ''}>Draft</button>
+                        ${lead.status === 'approved' ?
+                            `<button class="btn btn-warning" onclick="unapproveLead(${lead.id})">Unapprove</button>` :
+                            `<button class="btn btn-success" onclick="approveLead(${lead.id})" ${!lead.email_subject ? 'disabled' : ''}>Approve</button>`
+                        }
+                        <button class="btn btn-primary" onclick="sendLead(${lead.id})" ${lead.status !== 'approved' ? 'disabled' : ''}>Send</button>
+                        <button class="btn btn-success" onclick="workflowSend(${lead.id})" ${lead.status === 'sent' ? 'disabled' : ''}>Workflow</button>
+                        ${lead.email_subject ? `<button class="btn" onclick="previewDraft(${lead.id})">Preview</button>` : ''}
+                    </td>
+                </tr>
+            `).join('');
+        }
+
+        function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+
+        function scoreBadge(score) {
+            if (score == null || score === 0) return '<span class="score-badge score-low">—</span>';
+            const cls = score >= 70 ? 'score-high' : score >= 40 ? 'score-mid' : 'score-low';
+            return `<span class="score-badge ${cls}">${score}</span>`;
+        }
+
+        // Actions
+        async function scoreLead(id) {
+            try {
+                const data = await api(`/api/leads/${id}/score`, { method: 'POST' });
+                showToast(`Scored ${data.score} — ${data.reasons[0]}`, 'success');
+                loadLeads();
+            } catch (e) {}
+        }
+
+        async function draftLead(id) {
+            try {
+                const data = await api(`/api/leads/${id}/draft`, { method: 'POST' });
+                showToast(`Draft generated: "${data.subject}"`, 'success');
+                loadLeads();
+            } catch (e) {}
+        }
+
+        async function approveLead(id) {
+            try {
+                await api(`/api/leads/${id}/approve`, { method: 'POST' });
+                showToast('Lead approved', 'success');
+                loadLeads();
+            } catch (e) {}
+        }
+
+        async function unapproveLead(id) {
+            try {
+                await api(`/api/leads/${id}/unapprove`, { method: 'POST' });
+                showToast('Lead unapproved', 'info');
+                loadLeads();
+            } catch (e) {}
+        }
+
+        async function sendLead(id) {
+            try {
+                const data = await api(`/api/gmail/send/${id}`, { method: 'POST' });
+                if (data.success) {
+                    showToast('Email sent!', 'success');
+                } else {
+                    showToast(data.error || 'Send failed', 'error');
+                }
+                loadLeads();
+                checkDailyCount();
+            } catch (e) {}
+        }
+
+        async function workflowSend(id) {
+            try {
+                const data = await api(`/api/workflow/approve_and_send/${id}`, { method: 'POST' });
+                if (data.status === 'sent') {
+                    showToast(`Workflow complete! Message ID: ${data.message_id}`, 'success');
+                } else if (data.error) {
+                    showToast(data.error, 'error');
+                }
+                loadLeads();
+                checkDailyCount();
+            } catch (e) {}
+        }
+
+        async function saveEmail(id) {
+            const input = document.getElementById(`email-${id}`);
+            const email = input.value.trim();
+            if (!email) { showToast('Email cannot be empty', 'error'); return; }
+            try {
+                await api(`/api/leads/${id}/contact_email`, {
+                    method: 'PATCH',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ contact_email: email }),
+                });
+                showToast('Email saved', 'success');
+                loadLeads();
+            } catch (e) {}
+        }
+
+        // Preview modal
+        function previewDraft(id) {
+            const lead = leads.find(l => l.id === id);
+            if (!lead) return;
+            document.getElementById('modal-company').textContent = lead.company;
+            document.getElementById('modal-to').value = lead.contact_email || '';
+            document.getElementById('modal-subject').value = lead.email_subject || '';
+            document.getElementById('modal-body').value = lead.email_body || '';
+            document.getElementById('draft-modal').classList.add('open');
+        }
+
+        function closeModal() {
+            document.getElementById('draft-modal').classList.remove('open');
+        }
+
+        // Upload CSV
+        async function uploadCSV(e) {
+            e.preventDefault();
+            const file = document.getElementById('csv-file').files[0];
+            if (!file) { showToast('Select a CSV file first', 'error'); return; }
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const data = await api('/api/leads/upload', { method: 'POST', body: formData });
+                showToast(`Uploaded: ${data.inserted} inserted, ${data.skipped} skipped`, 'success');
+                loadLeads();
+            } catch (e) {}
+        }
+
+        // Close modal on overlay click
+        document.getElementById('draft-modal').addEventListener('click', function(e) {
+            if (e.target === this) closeModal();
+        });
+
+        // Init
+        checkGmail();
+        checkDailyCount();
+        loadLeads();
+    </script>
+</body>
+</html>
