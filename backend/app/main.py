@@ -84,9 +84,11 @@ from app.schemas import (
 from app.agent.outbound import draft_outreach_email
 from app.agent.scoring import score_lead
 from app.agent.responses import classify_reply, draft_followup_with_context
-from app import gmail
-from app.utils.response_playbook import RESPONSE_PLAYBOOK
-from services.hunter_service import HunterService
+# Gmail is optional - app must not crash if google libs are missing
+try:
+    from app import gmail
+except ImportError:
+    gmail = None  # type: ignore
 
 # Google CSE is optional - app must not crash if google libs are missing
 try:
@@ -98,8 +100,12 @@ logger = logging.getLogger(__name__)
 
 if GoogleCSEService is None:
     logger.warning(
-        "GoogleCSEService not available (missing google libs). "
-        "/api/leads/discover will be disabled."
+        "Google CSE disabled: google libraries not installed"
+    )
+
+if gmail is None:
+    logger.warning(
+        "Gmail disabled: google libraries not installed"
     )
 
 # Create database tables (with error handling for production)
@@ -251,13 +257,16 @@ def readiness_check(db: Session = Depends(get_db)):
         kp_check = ReadinessCheck(ok=False, error=str(e))
 
     # 3. Gmail (informational — not required for readiness)
-    config = gmail.get_gmail_config()
-    if config.token_path.exists():
-        gmail_check = ReadinessCheck(ok=True)
-    elif config.credentials_path.exists():
-        gmail_check = ReadinessCheck(ok=True, error="Token missing — Gmail not yet connected")
+    if gmail is None:
+        gmail_check = ReadinessCheck(ok=True, error="Gmail libraries not available")
     else:
-        gmail_check = ReadinessCheck(ok=True, error="No credentials configured")
+        config = gmail.get_gmail_config()
+        if config.token_path.exists():
+            gmail_check = ReadinessCheck(ok=True)
+        elif config.credentials_path.exists():
+            gmail_check = ReadinessCheck(ok=True, error="Token missing — Gmail not yet connected")
+        else:
+            gmail_check = ReadinessCheck(ok=True, error="No credentials configured")
 
     ready = db_check.ok and kp_check.ok
     return ReadinessResponse(
@@ -444,7 +453,7 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
             new_leads=0,
             duplicates=0,
             leads=[],
-            message="Google CSE disabled. Use Hunter.io or manual CSV upload.",
+            message="Google CSE disabled. Enable later to use discovery.",
         )
 
     # Check if Google CSE is configured BEFORE making any API calls
@@ -801,6 +810,9 @@ def connect_gmail(request: GmailConnectRequest = None):
     For local development, you can also call with no body to trigger
     the local server OAuth flow (opens browser).
     """
+    if gmail is None:
+        raise HTTPException(status_code=503, detail="Gmail service not available - Google libraries not installed")
+
     # Check if already connected
     status = gmail.get_connection_status()
     if status["connected"]:
@@ -851,6 +863,21 @@ def oauth_callback(code: str = Query(...), state: str = Query(None)):
     2. Saves the tokens
     3. Returns a success page to the user
     """
+    if gmail is None:
+        return HTMLResponse(
+            content="""
+            <!DOCTYPE html>
+            <html>
+            <head><title>Gmail Not Available</title></head>
+            <body style="font-family: sans-serif; text-align: center; padding: 50px;">
+                <h1>Gmail Service Not Available</h1>
+                <p>Google libraries are not installed.</p>
+            </body>
+            </html>
+            """,
+            status_code=503,
+        )
+
     result = gmail.complete_oauth_with_code(code, state)
 
     if result["success"]:
@@ -890,6 +917,12 @@ def oauth_callback(code: str = Query(...), state: str = Query(None)):
 @app.get("/api/gmail/status", response_model=GmailConnectResponse)
 def get_gmail_status():
     """Get current Gmail connection status."""
+    if gmail is None:
+        return GmailConnectResponse(
+            connected=False,
+            error="Gmail service not available - Google libraries not installed",
+        )
+
     status = gmail.get_connection_status()
     return GmailConnectResponse(
         connected=status["connected"],
@@ -911,6 +944,13 @@ def send_email_to_lead(lead_id: int, db: Session = Depends(get_db)):
     - Gmail must be connected
     - Daily send limit (100) must not be exceeded
     """
+    if gmail is None:
+        return GmailSendResponse(
+            success=False,
+            lead_id=lead_id,
+            error="Gmail service not available - Google libraries not installed",
+        )
+
     if settings.demo_mode:
         raise HTTPException(status_code=403, detail="Demo mode: sending disabled")
 
@@ -1010,6 +1050,14 @@ def send_batch_emails(request: BatchSendRequest, db: Session = Depends(get_db)):
     - Default limit: 25, max: 100
     - Returns summary of attempted, sent, skipped, and errors
     """
+    if gmail is None:
+        return BatchSendResponse(
+            attempted=0,
+            sent=0,
+            skipped=0,
+            errors=[BatchSendError(lead_id=0, error="Gmail service not available - Google libraries not installed")],
+        )
+
     if settings.demo_mode:
         raise HTTPException(status_code=403, detail="Demo mode: sending disabled")
 
@@ -1163,6 +1211,13 @@ def approve_and_send_lead(
     If dry_run=false (default): full workflow with all validations.
     """
     if not dry_run:
+        if gmail is None:
+            return WorkflowSendResponse(
+                lead_id=lead_id,
+                status="error",
+                error="Gmail service not available - Google libraries not installed",
+            )
+
         # Block real sends in demo mode
         if settings.demo_mode:
             raise HTTPException(status_code=403, detail="Demo mode: sending disabled")
