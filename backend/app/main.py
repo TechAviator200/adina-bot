@@ -85,10 +85,22 @@ from app.agent.outbound import draft_outreach_email
 from app.agent.scoring import score_lead
 from app.agent.responses import classify_reply, draft_followup_with_context
 from app import gmail
+from app.utils.response_playbook import RESPONSE_PLAYBOOK
 from services.hunter_service import HunterService
-from services.google_cse_service import GoogleCSEService
+
+# Google CSE is optional - app must not crash if google libs are missing
+try:
+    from services.google_cse_service import GoogleCSEService
+except ImportError:
+    GoogleCSEService = None  # type: ignore
 
 logger = logging.getLogger(__name__)
+
+if GoogleCSEService is None:
+    logger.warning(
+        "GoogleCSEService not available (missing google libs). "
+        "/api/leads/discover will be disabled."
+    )
 
 # Create database tables (with error handling for production)
 try:
@@ -197,20 +209,12 @@ def get_config():
 
 
 _KNOWLEDGE_PACK_PATH = Path(__file__).parent / "knowledge_pack.json"
-_RESPONSE_PLAYBOOK_PATH = Path(__file__).parent / "response_playbook.json"
 
 
 @app.get("/api/templates")
 def get_templates():
     """Return outreach response templates from the playbook."""
-    try:
-        data = json.loads(_RESPONSE_PLAYBOOK_PATH.read_text())
-    except FileNotFoundError:
-        raise HTTPException(status_code=404, detail="response_playbook.json not found")
-    except json.JSONDecodeError as e:
-        raise HTTPException(status_code=500, detail=f"Invalid JSON in playbook: {e}")
-
-    templates = data.get("followup_templates", {})
+    templates = RESPONSE_PLAYBOOK.get("followup_templates", {})
     result = []
     for intent, config in templates.items():
         template_text = config.get("template", "")
@@ -429,15 +433,42 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
 
     Use POST /api/leads/upload or manual entry to save leads you want to pursue.
 
-    Note: If Google CSE is unavailable, returns empty list with maintenance message.
+    Note: If Google CSE is unavailable (no API key/cx or libs missing), returns empty list with message.
     Use manual domain input with Hunter.io as fallback.
     """
+    # Check if GoogleCSEService is available (libs installed)
+    if GoogleCSEService is None:
+        return DiscoverLeadsResponse(
+            query_used="",
+            total_found=0,
+            new_leads=0,
+            duplicates=0,
+            leads=[],
+            message="Google CSE disabled. Use Hunter.io or manual CSV upload.",
+        )
+
+    # Check if Google CSE is configured BEFORE making any API calls
+    if not settings.google_cse_api_key or not settings.google_cse_cx:
+        logger.warning(
+            "[discover_leads] Google CSE disabled: GOOGLE_CSE_API_KEY=%s, GOOGLE_CSE_CX=%s",
+            "set" if settings.google_cse_api_key else "missing",
+            "set" if settings.google_cse_cx else "missing",
+        )
+        return DiscoverLeadsResponse(
+            query_used="",
+            total_found=0,
+            new_leads=0,
+            duplicates=0,
+            leads=[],
+            message="Google CSE disabled (no API key/cx). Use manual domain input with Hunter.io.",
+        )
+
     cse = GoogleCSEService()
 
     # Build query for display even if search fails
     query = cse._build_query(request.industry, request.keywords, request.company)
 
-    # Handle unconfigured or unavailable search gracefully
+    # Handle unavailable search gracefully (e.g., 403 errors)
     try:
         raw_leads, message = cse.discover_leads(
             industry=request.industry,
@@ -446,8 +477,9 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
         )
     except RuntimeError as e:
         # Unexpected error - return maintenance message
+        logger.error("[discover_leads] Google CSE error: %s", e)
         raw_leads = []
-        message = cse.MAINTENANCE_MESSAGE
+        message = "Search temporarily unavailable. Use Hunter.io or manual upload."
 
     # If maintenance mode, return early with message
     if message:

@@ -5,12 +5,11 @@ Classifies incoming email replies by intent and drafts appropriate follow-ups.
 All logic is rule-based and inspectable.
 """
 
-import json
 import re
-from pathlib import Path
 from typing import Dict, List, Literal, Tuple, TypedDict
 
 from app.models import Lead
+from app.utils.response_playbook import RESPONSE_PLAYBOOK
 
 
 IntentLabel = Literal["positive", "neutral", "objection", "deferral", "negative"]
@@ -26,12 +25,6 @@ class ClassificationResult(TypedDict):
 class FollowupResult(TypedDict):
     body: str
     intent: IntentLabel
-
-
-# Load response playbook at module level
-_playbook_path = Path(__file__).parent.parent / "response_playbook.json"
-with open(_playbook_path) as f:
-    RESPONSE_PLAYBOOK = json.load(f)
 
 
 def _normalize_text(text: str) -> str:
