@@ -7,6 +7,7 @@ Tokens are stored locally in environment-specified path.
 
 import base64
 import json
+import logging
 import os
 from datetime import date
 from email.mime.text import MIMEText
@@ -20,6 +21,8 @@ from googleapiclient.discovery import build
 from googleapiclient.errors import HttpError
 
 from app.settings import settings
+
+logger = logging.getLogger(__name__)
 
 # Gmail API scopes - send and read
 SCOPES = [
@@ -35,10 +38,25 @@ OAUTH_REDIRECT_URI = settings.oauth_redirect_uri
 
 # Resolve credentials directory (relative paths resolved from backend root)
 _BACKEND_ROOT = Path(__file__).parent.parent
-_CREDENTIALS_DIR = Path(settings.credentials_dir)
-if not _CREDENTIALS_DIR.is_absolute():
-    _CREDENTIALS_DIR = _BACKEND_ROOT / _CREDENTIALS_DIR
-_CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+_CREDENTIALS_DIR = settings.resolved_credentials_dir
+
+# Try to create credentials directory, but don't crash if it fails
+try:
+    _CREDENTIALS_DIR.mkdir(parents=True, exist_ok=True)
+    logger.debug("Credentials directory created/verified: %s", _CREDENTIALS_DIR)
+except Exception as e:
+    logger.warning("Could not create credentials directory %s: %s", _CREDENTIALS_DIR, e)
+    logger.warning("Gmail functionality will be limited until directory is available")
+
+
+def _check_credentials_dir_available():
+    """Check if credentials directory is available for Gmail operations."""
+    if not _CREDENTIALS_DIR.exists():
+        raise RuntimeError(
+            f"Credentials directory {_CREDENTIALS_DIR} is not available. "
+            "This may be due to running on Render free tier without persistent disk. "
+            "Gmail functionality is not available in this environment."
+        )
 
 
 class GmailConfig:
@@ -81,6 +99,8 @@ def get_credentials() -> Optional[Credentials]:
     Returns existing credentials if valid, refreshes if expired,
     or returns None if no valid credentials exist.
     """
+    _check_credentials_dir_available()
+    
     config = get_gmail_config()
 
     if not config.token_path.exists():
@@ -114,6 +134,8 @@ def start_oauth_flow() -> dict:
 
     The OAuth flow uses a local redirect URI for desktop apps.
     """
+    _check_credentials_dir_available()
+    
     config = get_gmail_config()
 
     if not config.credentials_path.exists():
@@ -196,6 +218,8 @@ def complete_oauth_with_code(code: str, state: Optional[str] = None) -> dict:
     Returns:
         dict with success status and message
     """
+    _check_credentials_dir_available()
+    
     config = get_gmail_config()
 
     if not config.credentials_path.exists():
@@ -234,6 +258,8 @@ def complete_oauth_with_code(code: str, state: Optional[str] = None) -> dict:
 
 def get_gmail_service():
     """Get authenticated Gmail API service."""
+    _check_credentials_dir_available()
+    
     creds = get_credentials()
     if not creds:
         raise RuntimeError("Gmail not connected. Please connect via /api/gmail/connect first.")

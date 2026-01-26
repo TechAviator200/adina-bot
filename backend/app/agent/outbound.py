@@ -5,33 +5,15 @@ Generates personalized outreach emails based on lead data and knowledge pack.
 All logic is deterministic and inspectable.
 """
 
-import json
-from pathlib import Path
 from typing import Optional, TypedDict
 
 from app.models import Lead
+from app.utils.knowledge_pack import KNOWLEDGE_PACK
 
 
 class EmailDraft(TypedDict):
     subject: str
     body: str
-
-
-# Load knowledge pack at module level (optional)
-_knowledge_pack_path = Path(__file__).parent.parent / "knowledge_pack.json"
-try:
-    with open(_knowledge_pack_path) as f:
-        KNOWLEDGE_PACK = json.load(f)
-except FileNotFoundError:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.warning(f"knowledge_pack.json not found at {_knowledge_pack_path}, using empty fallback")
-    KNOWLEDGE_PACK = {}
-except Exception as e:
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.error(f"Error loading knowledge_pack.json: {e}, using empty fallback")
-    KNOWLEDGE_PACK = {}
 
 
 # Industry to relevant problems/services mapping

@@ -4,7 +4,7 @@ services:
     plan: free
     runtime: docker
     rootDir: backend
-    dockerfilePath: ./Dockerfile
+    dockerfilePath: Dockerfile
     envVars:
       - key: API_KEY
         generateValue: true
@@ -15,7 +15,7 @@ services:
       - key: DEMO_MODE
         value: "false"
       - key: PORT
-        value: "8000"
+        value: "10000"
       - key: HUNTER_API_KEY
         sync: false
       - key: GOOGLE_CSE_API_KEY

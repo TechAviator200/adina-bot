@@ -90,16 +90,38 @@ from services.google_cse_service import GoogleCSEService
 
 logger = logging.getLogger(__name__)
 
-Base.metadata.create_all(bind=engine)
+# Create database tables (with error handling for production)
+try:
+    Base.metadata.create_all(bind=engine)
+    logger.info("Database tables created successfully")
+except Exception as e:
+    logger.error("Failed to create database tables: %s", e)
+    # In production, we might want to exit or handle this differently
+    # For now, log the error but continue
 
 app = FastAPI(title="Adina Bot API")
 
 
 @app.on_event("startup")
-def log_startup_config():
+async def startup_event():
+    """Initialize application on startup."""
+    logger.info("Starting Adina Bot API...")
+    
+    # Log configuration
     logger.info("OAUTH_REDIRECT_URI = %s", settings.oauth_redirect_uri)
-    logger.info("CREDENTIALS_DIR = %s", gmail._CREDENTIALS_DIR)
+    logger.info("CREDENTIALS_DIR = %s", settings.resolved_credentials_dir)
     logger.info("DEMO_MODE = %s", settings.demo_mode)
+    logger.info("DATABASE_URL = %s", settings.database_url.replace(settings.database_url.split('@')[0].split('//')[1].split(':')[0], '***') if '@' in settings.database_url else settings.database_url)
+    
+    # Try to create database tables
+    try:
+        Base.metadata.create_all(bind=engine)
+        logger.info("Database tables created successfully")
+    except Exception as e:
+        logger.error("Failed to create database tables: %s", e)
+        logger.warning("Application will continue, but database operations may fail")
+    
+    logger.info("Adina Bot API startup complete")
 
 # CORS middleware for frontend
 _cors_origins = [

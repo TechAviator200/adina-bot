@@ -30,6 +30,27 @@ class Settings(BaseSettings):
     google_cse_cx: Optional[str] = None
     disable_api_key_auth: bool = False  # Set DISABLE_API_KEY_AUTH=true for local dev only
 
+    @property
+    def resolved_credentials_dir(self) -> Path:
+        """Resolve credentials directory with fallback for Render free tier.
+        
+        If the configured credentials_dir points to /data/credentials but /data
+        is not available (Render free tier), fall back to /tmp/credentials.
+        """
+        # Resolve the configured path
+        credentials_path = Path(self.credentials_dir)
+        if not credentials_path.is_absolute():
+            # Relative to backend root
+            backend_root = Path(__file__).resolve().parent.parent
+            credentials_path = backend_root / credentials_path
+        
+        # Check if /data/credentials is requested but /data is not available
+        if str(credentials_path).startswith('/data/') and not Path('/data').exists():
+            logger.warning("/data directory not available (Render free tier), falling back to /tmp/credentials")
+            credentials_path = Path('/tmp/credentials')
+        
+        return credentials_path
+
     class Config:
         extra = "ignore"  # Ignore extra env vars not defined in Settings
 

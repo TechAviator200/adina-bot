@@ -5,23 +5,16 @@ Scores leads based on transparent, additive criteria.
 All logic is deterministic and inspectable.
 """
 
-import json
 import re
-from pathlib import Path
 from typing import List, Optional, TypedDict
 
 from app.models import Lead
+from app.utils.knowledge_pack import KNOWLEDGE_PACK
 
 
 class ScoreResult(TypedDict):
     score: float
     reasons: List[str]
-
-
-# Load knowledge pack at module level
-_knowledge_pack_path = Path(__file__).parent.parent / "knowledge_pack.json"
-with open(_knowledge_pack_path) as f:
-    KNOWLEDGE_PACK = json.load(f)
 
 # Extract industries from knowledge pack (normalized to lowercase)
 KNOWLEDGE_PACK_INDUSTRIES = [
