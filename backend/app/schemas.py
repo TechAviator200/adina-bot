@@ -213,3 +213,72 @@ class DiscoverLeadsResponse(BaseModel):
     duplicates: int
     leads: List[DiscoveredLead]
     message: Optional[str] = None  # Maintenance or status message
+
+
+# Company Discovery Schemas (Hunter Discover + Snov.io)
+
+class CompanyDiscoverRequest(BaseModel):
+    industry: str
+    country: Optional[str] = None
+    size: Optional[str] = None  # "1-10", "11-50", "51-200", "201-500", "500+"
+    source: str = "both"  # "hunter", "snov", or "both"
+    limit: int = 100
+
+
+class DiscoveredCompany(BaseModel):
+    name: str
+    domain: Optional[str] = None
+    description: Optional[str] = None
+    industry: str
+    size: Optional[str] = None
+    location: Optional[str] = None
+    source: str  # "hunter" or "snov"
+
+
+class CompanyDiscoverResponse(BaseModel):
+    total_found: int
+    companies: List[DiscoveredCompany]
+    message: Optional[str] = None
+
+
+class CompanyContactsRequest(BaseModel):
+    domain: str
+    source: str = "hunter"  # "hunter" or "snov"
+
+
+class ExecutiveContact(BaseModel):
+    name: str
+    title: Optional[str] = None
+    email: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    source: str  # "hunter" or "snov"
+
+
+class CompanyContactsResponse(BaseModel):
+    domain: str
+    company_name: Optional[str] = None
+    contacts: List[ExecutiveContact]
+    message: Optional[str] = None
+
+
+class ImportCompanyRequest(BaseModel):
+    name: str
+    domain: Optional[str] = None
+    description: Optional[str] = None
+    industry: str
+    size: Optional[str] = None
+    location: Optional[str] = None
+    contact_name: Optional[str] = None
+    contact_role: Optional[str] = None
+    contact_email: Optional[str] = None
+    source: str = "hunter"
+
+
+class ImportCompaniesRequest(BaseModel):
+    companies: List[ImportCompanyRequest]
+
+
+class ImportCompaniesResponse(BaseModel):
+    imported: int
+    skipped: int
+    leads: List[LeadRead]

@@ -1,9 +1,9 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getLeads, uploadLeads, scoreLead, draftLead, approveLead, unapproveLead, workflowSend, pullLeads, updateLeadStatus } from '../api/leads'
+import { getLeads, uploadLeads, scoreLead, draftLead, approveLead, unapproveLead, workflowSend, pullLeads, updateLeadStatus, discoverCompanies, getCompanyContacts, importCompaniesAsLeads } from '../api/leads'
 import { getGmailStatus } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
-import type { Lead } from '../api/types'
+import type { Lead, DiscoveredCompany, ExecutiveContact, ImportCompanyRequest } from '../api/types'
 import Button from '../components/ui/Button'
 
 const STATUS_TABS = ['all', 'new', 'qualified', 'drafted', 'approved', 'sent']
@@ -24,6 +24,19 @@ export default function LeadsPage() {
   const [searchDomains, setSearchDomains] = useState('')
   const [searchLoading, setSearchLoading] = useState(false)
   const [updatingStatusId, setUpdatingStatusId] = useState<number | null>(null)
+  // Company discovery state
+  const [discoverOpen, setDiscoverOpen] = useState(false)
+  const [discoverIndustry, setDiscoverIndustry] = useState('')
+  const [discoverCountry, setDiscoverCountry] = useState('')
+  const [discoverSize, setDiscoverSize] = useState('')
+  const [discoverSource, setDiscoverSource] = useState<'hunter' | 'snov' | 'both'>('both')
+  const [discoverLoading, setDiscoverLoading] = useState(false)
+  const [discoveredCompanies, setDiscoveredCompanies] = useState<DiscoveredCompany[]>([])
+  const [discoverMessage, setDiscoverMessage] = useState<string | null>(null)
+  const [selectedCompanies, setSelectedCompanies] = useState<Set<string>>(new Set())
+  const [companyContacts, setCompanyContacts] = useState<Record<string, ExecutiveContact[]>>({})
+  const [loadingContacts, setLoadingContacts] = useState<string | null>(null)
+  const [importingLeads, setImportingLeads] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { addLog, startRun, logToRun, endRun } = useAgentLog()
   const { addToast } = useToast()
@@ -219,6 +232,127 @@ export default function LeadsPage() {
     }
   }
 
+  // Company discovery functions
+  async function handleDiscover() {
+    if (!discoverIndustry.trim()) {
+      addToast('Please enter an industry', 'error')
+      return
+    }
+    setDiscoverLoading(true)
+    setDiscoveredCompanies([])
+    setDiscoverMessage(null)
+    setSelectedCompanies(new Set())
+    setCompanyContacts({})
+    try {
+      const result = await discoverCompanies(
+        discoverIndustry.trim(),
+        discoverCountry.trim() || undefined,
+        discoverSize || undefined,
+        discoverSource
+      )
+      setDiscoveredCompanies(result.companies)
+      setDiscoverMessage(result.message)
+      if (result.companies.length === 0 && !result.message) {
+        addToast('No companies found for this industry', 'info')
+      } else {
+        addToast(`Found ${result.companies.length} companies`, 'success')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Discovery failed'
+      addToast(`Discovery failed: ${msg}`, 'error')
+    } finally {
+      setDiscoverLoading(false)
+    }
+  }
+
+  async function handleGetContacts(domain: string, source: string) {
+    if (!domain) {
+      addToast('No domain available for this company', 'error')
+      return
+    }
+    setLoadingContacts(domain)
+    try {
+      const result = await getCompanyContacts(domain, source)
+      setCompanyContacts((prev) => ({ ...prev, [domain]: result.contacts }))
+      if (result.contacts.length === 0) {
+        addToast('No contacts found', 'info')
+      } else {
+        addToast(`Found ${result.contacts.length} contacts`, 'success')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to get contacts'
+      addToast(`Get contacts failed: ${msg}`, 'error')
+    } finally {
+      setLoadingContacts(null)
+    }
+  }
+
+  function toggleCompanySelect(key: string) {
+    setSelectedCompanies((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  async function handleImportSelected() {
+    if (selectedCompanies.size === 0) {
+      addToast('No companies selected', 'error')
+      return
+    }
+    setImportingLeads(true)
+    try {
+      const toImport: ImportCompanyRequest[] = []
+      for (const key of selectedCompanies) {
+        const company = discoveredCompanies.find((c) => (c.domain || c.name) === key)
+        if (!company) continue
+        const contacts = companyContacts[company.domain || ''] || []
+        if (contacts.length > 0) {
+          // Import with first contact
+          const contact = contacts[0]
+          toImport.push({
+            name: company.name,
+            domain: company.domain,
+            description: company.description,
+            industry: company.industry,
+            size: company.size,
+            location: company.location,
+            contact_name: contact.name,
+            contact_role: contact.title,
+            contact_email: contact.email,
+            source: company.source,
+          })
+        } else {
+          // Import without contact
+          toImport.push({
+            name: company.name,
+            domain: company.domain,
+            description: company.description,
+            industry: company.industry,
+            size: company.size,
+            location: company.location,
+            contact_name: null,
+            contact_role: null,
+            contact_email: null,
+            source: company.source,
+          })
+        }
+      }
+      const result = await importCompaniesAsLeads(toImport)
+      addToast(`Imported ${result.imported} leads, ${result.skipped} skipped`, 'success')
+      setDiscoverOpen(false)
+      setDiscoveredCompanies([])
+      setSelectedCompanies(new Set())
+      setCompanyContacts({})
+      fetchLeads()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Import failed'
+      addToast(`Import failed: ${msg}`, 'error')
+    } finally {
+      setImportingLeads(false)
+    }
+  }
+
   async function handleStatusChange(leadId: number, newStatus: string) {
     setUpdatingStatusId(leadId)
     try {
@@ -275,6 +409,9 @@ export default function LeadsPage() {
             onChange={handleUpload}
             className="hidden"
           />
+          <Button size="sm" variant="secondary" onClick={() => setDiscoverOpen(true)}>
+            Discover Companies
+          </Button>
           <Button size="sm" variant="secondary" onClick={() => setSearchOpen(true)}>
             Pull by Domain
           </Button>
@@ -530,6 +667,197 @@ export default function LeadsPage() {
                 ) : 'Pull Leads'}
               </Button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Discover Companies Modal (Hunter Discover + Snov.io) */}
+      {discoverOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
+          <div className="bg-soft-navy rounded-lg border border-warm-gray/20 p-6 w-full max-w-3xl shadow-xl my-4">
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <h2 className="text-lg font-semibold text-warm-cream">Discover Companies by Industry</h2>
+                <p className="text-xs text-warm-gray mt-1">Browse companies for FREE. Credits only used when getting contacts.</p>
+              </div>
+              <button onClick={() => setDiscoverOpen(false)} className="text-warm-gray hover:text-warm-cream">
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
+                </svg>
+              </button>
+            </div>
+
+            {/* Search Form */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
+              <div className="col-span-2">
+                <label className="block text-xs text-warm-gray mb-1">Industry *</label>
+                <input
+                  type="text"
+                  value={discoverIndustry}
+                  onChange={(e) => setDiscoverIndustry(e.target.value)}
+                  placeholder="e.g. Healthcare, Real Estate, SaaS"
+                  className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-warm-gray mb-1">Country</label>
+                <input
+                  type="text"
+                  value={discoverCountry}
+                  onChange={(e) => setDiscoverCountry(e.target.value)}
+                  placeholder="e.g. US, UK"
+                  className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                />
+              </div>
+              <div>
+                <label className="block text-xs text-warm-gray mb-1">Company Size</label>
+                <select
+                  value={discoverSize}
+                  onChange={(e) => setDiscoverSize(e.target.value)}
+                  className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm focus:outline-none focus:border-terracotta"
+                >
+                  <option value="">Any size</option>
+                  <option value="1-10">1-10</option>
+                  <option value="11-50">11-50</option>
+                  <option value="51-200">51-200</option>
+                  <option value="201-500">201-500</option>
+                  <option value="500+">500+</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-4 mb-4">
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-warm-gray">Source:</label>
+                <div className="flex gap-1">
+                  {(['both', 'hunter', 'snov'] as const).map((src) => (
+                    <button
+                      key={src}
+                      onClick={() => setDiscoverSource(src)}
+                      className={`px-3 py-1 text-xs rounded transition-colors ${
+                        discoverSource === src
+                          ? 'bg-terracotta text-warm-cream'
+                          : 'bg-warm-cream/10 text-warm-gray hover:text-warm-cream'
+                      }`}
+                    >
+                      {src === 'both' ? 'Both' : src === 'hunter' ? 'Hunter.io' : 'Snov.io'}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <Button size="sm" onClick={handleDiscover} disabled={discoverLoading || !discoverIndustry.trim()}>
+                {discoverLoading ? (
+                  <span className="flex items-center gap-1.5">
+                    <svg className="animate-spin h-3.5 w-3.5" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                    Searching...
+                  </span>
+                ) : 'Search'}
+              </Button>
+            </div>
+
+            {discoverMessage && (
+              <div className="mb-4 p-3 bg-terracotta/20 border border-terracotta/30 rounded-lg text-sm text-warm-cream">
+                {discoverMessage}
+              </div>
+            )}
+
+            {/* Results */}
+            {discoveredCompanies.length > 0 && (
+              <>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-warm-gray">{discoveredCompanies.length} companies found</span>
+                  {selectedCompanies.size > 0 && (
+                    <Button size="sm" onClick={handleImportSelected} disabled={importingLeads}>
+                      {importingLeads ? 'Importing...' : `Import ${selectedCompanies.size} Selected`}
+                    </Button>
+                  )}
+                </div>
+                <div className="max-h-80 overflow-y-auto space-y-2">
+                  {discoveredCompanies.map((company) => {
+                    const key = company.domain || company.name
+                    const contacts = companyContacts[company.domain || ''] || []
+                    const isSelected = selectedCompanies.has(key)
+                    return (
+                      <div
+                        key={key}
+                        className={`p-3 rounded-lg border transition-colors ${
+                          isSelected
+                            ? 'bg-terracotta/20 border-terracotta/40'
+                            : 'bg-soft-navy/50 border-warm-gray/10 hover:border-warm-gray/30'
+                        }`}
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="flex items-start gap-3">
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleCompanySelect(key)}
+                              className="accent-terracotta mt-1"
+                            />
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-sm font-medium text-warm-cream">{company.name}</span>
+                                <span className="text-xs px-1.5 py-0.5 rounded bg-warm-gray/20 text-warm-gray">
+                                  {company.source}
+                                </span>
+                              </div>
+                              {company.domain && (
+                                <p className="text-xs text-warm-gray">{company.domain}</p>
+                              )}
+                              {company.description && (
+                                <p className="text-xs text-warm-gray/70 mt-1 line-clamp-2">{company.description}</p>
+                              )}
+                              <div className="flex gap-3 mt-1 text-xs text-warm-gray">
+                                {company.location && <span>{company.location}</span>}
+                                {company.size && <span>{company.size} employees</span>}
+                              </div>
+                            </div>
+                          </div>
+                          <div className="flex-shrink-0">
+                            {company.domain && (
+                              <Button
+                                size="sm"
+                                variant="secondary"
+                                onClick={() => handleGetContacts(company.domain!, company.source)}
+                                disabled={loadingContacts === company.domain}
+                              >
+                                {loadingContacts === company.domain ? 'Loading...' : contacts.length > 0 ? `${contacts.length} Contacts` : 'Get Contacts'}
+                              </Button>
+                            )}
+                          </div>
+                        </div>
+                        {/* Show contacts */}
+                        {contacts.length > 0 && (
+                          <div className="mt-2 pt-2 border-t border-warm-gray/10 space-y-1">
+                            {contacts.slice(0, 5).map((contact, idx) => (
+                              <div key={idx} className="flex items-center gap-2 text-xs">
+                                <span className="text-warm-cream">{contact.name}</span>
+                                {contact.title && <span className="text-warm-gray">- {contact.title}</span>}
+                                {contact.email && (
+                                  <span className="text-terracotta">{contact.email}</span>
+                                )}
+                              </div>
+                            ))}
+                            {contacts.length > 5 && (
+                              <p className="text-xs text-warm-gray">+{contacts.length - 5} more</p>
+                            )}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+                </div>
+              </>
+            )}
+
+            {discoveredCompanies.length === 0 && !discoverLoading && (
+              <div className="text-center py-8 text-warm-gray text-sm">
+                Enter an industry and click Search to discover companies
+              </div>
+            )}
           </div>
         </div>
       )}

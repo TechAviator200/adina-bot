@@ -66,6 +66,71 @@ class HunterService:
             })
         return results
 
+    def discover_companies(
+        self,
+        industry: Optional[str] = None,
+        country: Optional[str] = None,
+        size: Optional[str] = None,
+        limit: int = 100,
+    ) -> List[dict]:
+        """Discover companies using Hunter Discover (FREE - no credits consumed for browsing)."""
+        params = {
+            "api_key": self._api_key(),
+            "limit": min(limit, 100),
+        }
+        if industry:
+            params["industry"] = industry
+        if country:
+            params["country"] = country
+        if size:
+            params["company_size"] = size
+
+        response = requests.get(
+            f"{self.BASE_URL}/companies/search",
+            params=params,
+        )
+        if not response.ok:
+            self._raise_error(response)
+
+        data = response.json().get("data", {})
+        results = []
+        for company in data.get("companies", []):
+            results.append({
+                "name": company.get("name"),
+                "domain": company.get("domain"),
+                "description": company.get("description"),
+                "industry": company.get("industry") or industry,
+                "size": company.get("size"),
+                "location": company.get("country"),
+                "source": "hunter",
+            })
+        return results
+
+    def get_company_info(self, domain: str) -> Optional[dict]:
+        """Get detailed company information by domain."""
+        response = requests.get(
+            f"{self.BASE_URL}/companies/{self._clean_domain(domain)}",
+            params={"api_key": self._api_key()},
+        )
+        if not response.ok:
+            if response.status_code == 404:
+                return None
+            self._raise_error(response)
+
+        data = response.json().get("data", {})
+        if not data:
+            return None
+
+        return {
+            "name": data.get("name"),
+            "domain": data.get("domain"),
+            "description": data.get("description"),
+            "industry": data.get("industry"),
+            "size": data.get("size"),
+            "location": data.get("country"),
+            "website": f"https://{data.get('domain')}" if data.get("domain") else None,
+        }
+
     @staticmethod
     def _clean_domain(domain: str) -> str:
         """Extract bare domain from a URL or domain string."""

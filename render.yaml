@@ -1,4 +1,5 @@
 services:
+  # Backend API
   - type: web
     name: adina-bot-backend
     plan: free
@@ -18,11 +19,37 @@ services:
         value: "10000"
       - key: HUNTER_API_KEY
         sync: false
+      - key: SNOV_CLIENT_ID
+        sync: false
+      - key: SNOV_CLIENT_SECRET
+        sync: false
       - key: GOOGLE_CSE_API_KEY
         sync: false
       - key: GOOGLE_CSE_CX
         sync: false
+      - key: FRONTEND_URL
+        sync: false
     healthCheckPath: /health
+
+  # Frontend Static Site
+  - type: web
+    name: adina-bot-frontend
+    plan: free
+    runtime: static
+    rootDir: frontend
+    buildCommand: npm install && npm run build
+    staticPublishPath: dist
+    envVars:
+      - key: VITE_API_BASE_URL
+        sync: false
+      - key: VITE_API_KEY
+        sync: false
+      - key: VITE_DEMO_MODE
+        value: "false"
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
 
 databases:
   - name: adina-db

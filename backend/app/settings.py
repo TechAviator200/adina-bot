@@ -26,6 +26,8 @@ class Settings(BaseSettings):
     oauth_redirect_uri: str = "http://127.0.0.1:8000/oauth/callback"
     api_key: Optional[str] = None
     hunter_api_key: Optional[str] = None
+    snov_client_id: Optional[str] = None
+    snov_client_secret: Optional[str] = None
     google_cse_api_key: Optional[str] = None
     google_cse_cx: Optional[str] = None
     disable_api_key_auth: bool = False  # Set DISABLE_API_KEY_AUTH=true for local dev only
@@ -59,9 +61,10 @@ settings = Settings()
 
 # Log which keys are configured (never log actual values)
 logger.debug(
-    "Settings loaded: API_KEY set? %s, HUNTER_API_KEY set? %s, GOOGLE_CSE_API_KEY set? %s, GOOGLE_CSE_CX set? %s",
+    "Settings loaded: API_KEY set? %s, HUNTER_API_KEY set? %s, SNOV_CLIENT_ID set? %s, GOOGLE_CSE_API_KEY set? %s, GOOGLE_CSE_CX set? %s",
     settings.api_key is not None,
     settings.hunter_api_key is not None,
+    settings.snov_client_id is not None,
     settings.google_cse_api_key is not None,
     settings.google_cse_cx is not None,
 )

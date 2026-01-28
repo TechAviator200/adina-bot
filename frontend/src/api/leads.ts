@@ -8,6 +8,10 @@ import type {
   WorkflowSendResponse,
   ContactEmailResponse,
   LeadStatusResponse,
+  CompanyDiscoverResponse,
+  CompanyContactsResponse,
+  ImportCompanyRequest,
+  ImportCompaniesResponse,
 } from './types'
 
 export async function getLeads(): Promise<Lead[]> {
@@ -71,6 +75,45 @@ export async function updateLeadStatus(id: number, status: string): Promise<Lead
 export async function pullLeads(domains: string[]): Promise<{ new_leads_added: number }> {
   const { data } = await apiClient.post<{ new_leads_added: number }>('/api/leads/pull', {
     domains: domains,
+  })
+  return data
+}
+
+// Company Discovery Functions
+
+export async function discoverCompanies(
+  industry: string,
+  country?: string,
+  size?: string,
+  source: string = 'both',
+  limit: number = 100
+): Promise<CompanyDiscoverResponse> {
+  const { data } = await apiClient.post<CompanyDiscoverResponse>('/api/companies/discover', {
+    industry,
+    country: country || null,
+    size: size || null,
+    source,
+    limit,
+  })
+  return data
+}
+
+export async function getCompanyContacts(
+  domain: string,
+  source: string = 'hunter'
+): Promise<CompanyContactsResponse> {
+  const { data } = await apiClient.post<CompanyContactsResponse>(
+    `/api/companies/${encodeURIComponent(domain)}/contacts`,
+    { domain, source }
+  )
+  return data
+}
+
+export async function importCompaniesAsLeads(
+  companies: ImportCompanyRequest[]
+): Promise<ImportCompaniesResponse> {
+  const { data } = await apiClient.post<ImportCompaniesResponse>('/api/leads/import', {
+    companies,
   })
   return data
 }

@@ -111,3 +111,55 @@ export interface OutreachTemplate {
   template: string
   cta: string
 }
+
+// Company Discovery Types
+
+export interface DiscoveredCompany {
+  name: string
+  domain: string | null
+  description: string | null
+  industry: string
+  size: string | null
+  location: string | null
+  source: string
+}
+
+export interface CompanyDiscoverResponse {
+  total_found: number
+  companies: DiscoveredCompany[]
+  message: string | null
+}
+
+export interface ExecutiveContact {
+  name: string
+  title: string | null
+  email: string | null
+  linkedin_url: string | null
+  source: string
+}
+
+export interface CompanyContactsResponse {
+  domain: string
+  company_name: string | null
+  contacts: ExecutiveContact[]
+  message: string | null
+}
+
+export interface ImportCompanyRequest {
+  name: string
+  domain: string | null
+  description: string | null
+  industry: string
+  size: string | null
+  location: string | null
+  contact_name: string | null
+  contact_role: string | null
+  contact_email: string | null
+  source: string
+}
+
+export interface ImportCompaniesResponse {
+  imported: number
+  skipped: number
+  leads: Lead[]
+}

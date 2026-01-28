@@ -80,6 +80,15 @@ from app.schemas import (
     DiscoverLeadsRequest,
     DiscoverLeadsResponse,
     DiscoveredLead,
+    # Company discovery schemas
+    CompanyDiscoverRequest,
+    CompanyDiscoverResponse,
+    DiscoveredCompany,
+    CompanyContactsRequest,
+    CompanyContactsResponse,
+    ExecutiveContact,
+    ImportCompaniesRequest,
+    ImportCompaniesResponse,
 )
 from app.agent.outbound import draft_outreach_email
 from app.agent.scoring import score_lead
@@ -96,11 +105,36 @@ try:
 except ImportError:
     GoogleCSEService = None  # type: ignore
 
+# Hunter.io service for lead discovery
+try:
+    from services.hunter_service import HunterService
+except ImportError:
+    HunterService = None  # type: ignore
+
+# Snov.io service for lead discovery
+try:
+    from services.snov_service import SnovService
+except ImportError:
+    SnovService = None  # type: ignore
+
+# Response playbook for templates
+from app.utils.response_playbook import RESPONSE_PLAYBOOK
+
 logger = logging.getLogger(__name__)
 
 if GoogleCSEService is None:
     logger.warning(
         "Google CSE disabled: google libraries not installed"
+    )
+
+if HunterService is None:
+    logger.warning(
+        "Hunter.io disabled: service not available"
+    )
+
+if SnovService is None:
+    logger.warning(
+        "Snov.io disabled: service not available"
     )
 
 if gmail is None:
@@ -219,10 +253,15 @@ _KNOWLEDGE_PACK_PATH = Path(__file__).parent / "knowledge_pack.json"
 
 @app.get("/api/templates")
 def get_templates():
-    """Return outreach response templates from the playbook."""
+    """Return outreach response templates from the playbook in defined order."""
     templates = RESPONSE_PLAYBOOK.get("followup_templates", {})
+    # Explicit ordering as defined in materials
+    INTENT_ORDER = ["positive", "neutral", "objection", "deferral", "negative"]
     result = []
-    for intent, config in templates.items():
+    for intent in INTENT_ORDER:
+        if intent not in templates:
+            continue
+        config = templates[intent]
         template_text = config.get("template", "")
         if not template_text and "templates_by_objection" in config:
             template_text = config["templates_by_objection"].get("default", "")
@@ -558,6 +597,260 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
         duplicates=duplicates,
         leads=discovered_leads,
         message=None,
+    )
+
+
+# Company Discovery Endpoints (Hunter Discover + Snov.io)
+
+@app.post("/api/companies/discover", response_model=CompanyDiscoverResponse)
+def discover_companies(request: CompanyDiscoverRequest):
+    """
+    Discover companies by industry using Hunter Discover and/or Snov.io.
+
+    This is FREE - no credits consumed for browsing companies.
+    Credits are only used when revealing contact emails via /api/companies/{domain}/contacts.
+
+    Source options:
+    - "hunter": Use Hunter Discover only
+    - "snov": Use Snov.io only
+    - "both": Use both services (default)
+    """
+    all_companies: List[DiscoveredCompany] = []
+    messages = []
+
+    # Hunter Discover
+    if request.source in ("hunter", "both"):
+        if HunterService is None:
+            messages.append("Hunter.io service not available")
+        elif not settings.hunter_api_key:
+            messages.append("Hunter.io API key not configured")
+        else:
+            try:
+                hunter = HunterService()
+                hunter_results = hunter.discover_companies(
+                    industry=request.industry,
+                    country=request.country,
+                    size=request.size,
+                    limit=request.limit,
+                )
+                for company in hunter_results:
+                    all_companies.append(DiscoveredCompany(
+                        name=company.get("name", "Unknown"),
+                        domain=company.get("domain"),
+                        description=company.get("description"),
+                        industry=company.get("industry", request.industry),
+                        size=company.get("size"),
+                        location=company.get("location"),
+                        source="hunter",
+                    ))
+            except Exception as e:
+                logger.error("Hunter Discover error: %s", e)
+                messages.append(f"Hunter.io error: {str(e)}")
+
+    # Snov.io
+    if request.source in ("snov", "both"):
+        if SnovService is None:
+            messages.append("Snov.io service not available")
+        elif not settings.snov_client_id or not settings.snov_client_secret:
+            messages.append("Snov.io credentials not configured")
+        else:
+            try:
+                snov = SnovService()
+                snov_results = snov.search_by_industry(
+                    industry=request.industry,
+                    country=request.country,
+                    size=request.size,
+                    limit=request.limit,
+                )
+                for company in snov_results:
+                    all_companies.append(DiscoveredCompany(
+                        name=company.get("name", "Unknown"),
+                        domain=company.get("domain"),
+                        description=company.get("description"),
+                        industry=company.get("industry", request.industry),
+                        size=company.get("size"),
+                        location=company.get("location"),
+                        source="snov",
+                    ))
+            except Exception as e:
+                logger.error("Snov.io error: %s", e)
+                messages.append(f"Snov.io error: {str(e)}")
+
+    # Deduplicate by domain (prefer first occurrence)
+    seen_domains = set()
+    unique_companies = []
+    for company in all_companies:
+        domain_key = (company.domain or company.name).lower()
+        if domain_key not in seen_domains:
+            seen_domains.add(domain_key)
+            unique_companies.append(company)
+
+    message = "; ".join(messages) if messages else None
+
+    return CompanyDiscoverResponse(
+        total_found=len(unique_companies),
+        companies=unique_companies,
+        message=message,
+    )
+
+
+@app.post("/api/companies/{domain}/contacts", response_model=CompanyContactsResponse)
+def get_company_contacts(domain: str, request: CompanyContactsRequest = None):
+    """
+    Get executive contacts for a company by domain.
+
+    This USES CREDITS - each call consumes credits from your Hunter/Snov.io quota.
+
+    Returns email addresses, titles, and LinkedIn URLs for contacts at the company.
+    """
+    source = request.source if request else "hunter"
+    contacts: List[ExecutiveContact] = []
+    company_name = None
+    messages = []
+
+    if source == "hunter":
+        if HunterService is None:
+            raise HTTPException(status_code=503, detail="Hunter.io service not available")
+        if not settings.hunter_api_key:
+            raise HTTPException(status_code=503, detail="Hunter.io API key not configured")
+
+        try:
+            hunter = HunterService()
+            # Get company info
+            company_info = hunter.get_company_info(domain)
+            if company_info:
+                company_name = company_info.get("name")
+
+            # Get contacts
+            results = hunter.domain_search(domain)
+            for person in results:
+                contacts.append(ExecutiveContact(
+                    name=person.get("name") or "Unknown",
+                    title=person.get("job_title"),
+                    email=person.get("email"),
+                    linkedin_url=person.get("linkedin_url"),
+                    source="hunter",
+                ))
+        except Exception as e:
+            logger.error("Hunter domain search error: %s", e)
+            raise HTTPException(status_code=502, detail=f"Hunter.io error: {str(e)}")
+
+    elif source == "snov":
+        if SnovService is None:
+            raise HTTPException(status_code=503, detail="Snov.io service not available")
+        if not settings.snov_client_id or not settings.snov_client_secret:
+            raise HTTPException(status_code=503, detail="Snov.io credentials not configured")
+
+        try:
+            snov = SnovService()
+            # Get company profile
+            company_profile = snov.get_company_profile(domain)
+            if company_profile:
+                company_name = company_profile.get("name")
+
+            # Get contacts
+            results = snov.get_emails_by_domain(domain)
+            for person in results:
+                contacts.append(ExecutiveContact(
+                    name=person.get("name") or "Unknown",
+                    title=person.get("title"),
+                    email=person.get("email"),
+                    linkedin_url=person.get("linkedin_url"),
+                    source="snov",
+                ))
+        except Exception as e:
+            logger.error("Snov.io domain search error: %s", e)
+            raise HTTPException(status_code=502, detail=f"Snov.io error: {str(e)}")
+
+    else:
+        raise HTTPException(status_code=400, detail="Invalid source. Use 'hunter' or 'snov'")
+
+    return CompanyContactsResponse(
+        domain=domain,
+        company_name=company_name,
+        contacts=contacts,
+        message="; ".join(messages) if messages else None,
+    )
+
+
+@app.post("/api/leads/import", response_model=ImportCompaniesResponse)
+def import_companies_as_leads(
+    request: ImportCompaniesRequest, db: Session = Depends(get_db)
+):
+    """
+    Import discovered companies as leads.
+
+    Takes a list of companies (with optional contact info) and creates Lead records.
+    Deduplicates against existing leads by company name or domain/website.
+    Auto-scores each imported lead.
+    """
+    imported = 0
+    skipped = 0
+    leads_created: List[LeadRead] = []
+
+    # Get existing companies and websites for deduplication
+    existing_companies = {
+        lead.company.lower() for lead in db.query(Lead.company).all() if lead.company
+    }
+    existing_websites = {
+        lead.website.lower() for lead in db.query(Lead.website).all() if lead.website
+    }
+
+    for company in request.companies:
+        # Check for duplicates
+        company_lower = company.name.lower() if company.name else ""
+        domain_lower = company.domain.lower() if company.domain else ""
+
+        if company_lower in existing_companies:
+            skipped += 1
+            continue
+        if domain_lower and domain_lower in existing_websites:
+            skipped += 1
+            continue
+
+        # Parse employee count from size string
+        employees = None
+        if company.size:
+            employees = parse_employees(company.size)
+
+        # Create lead
+        lead = Lead(
+            company=company.name,
+            industry=company.industry,
+            location=company.location,
+            employees=employees,
+            website=company.domain,
+            notes=company.description,
+            contact_name=company.contact_name,
+            contact_role=company.contact_role,
+            contact_email=company.contact_email,
+            source=company.source,
+            status="new",
+        )
+        db.add(lead)
+        db.flush()  # Get the ID
+
+        # Score the lead
+        score_result = score_lead(lead)
+        lead.score = score_result["score"]
+        lead.score_reason = "; ".join(score_result["reasons"])
+        if score_result["score"] >= 70:
+            lead.status = "qualified"
+
+        # Add to existing sets for subsequent deduplication
+        existing_companies.add(company_lower)
+        if domain_lower:
+            existing_websites.add(domain_lower)
+
+        imported += 1
+        leads_created.append(LeadRead.model_validate(lead))
+
+    db.commit()
+
+    return ImportCompaniesResponse(
+        imported=imported,
+        skipped=skipped,
+        leads=leads_created,
     )
 
 
