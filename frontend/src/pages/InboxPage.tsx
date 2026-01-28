@@ -1,9 +1,9 @@
 import { useState, useEffect } from 'react'
-import { draftReply, getTemplates } from '../api/inbox'
+import { draftReply, getOutreachTemplates } from '../api/inbox'
 import { getLeads } from '../api/leads'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
-import type { Lead, ReplyDraftResponse, OutreachTemplate } from '../api/types'
+import type { Lead, ReplyDraftResponse, OutreachEmailTemplate } from '../api/types'
 import Button from '../components/ui/Button'
 import Badge from '../components/ui/Badge'
 import Card from '../components/ui/Card'
@@ -11,7 +11,7 @@ import Card from '../components/ui/Card'
 export default function InboxPage() {
   const [leads, setLeads] = useState<Lead[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<number | ''>('')
-  const [templates, setTemplates] = useState<OutreachTemplate[]>([])
+  const [templates, setTemplates] = useState<OutreachEmailTemplate[]>([])
   const [selectedTemplate, setSelectedTemplate] = useState('')
   const [inboundText, setInboundText] = useState('')
   const [result, setResult] = useState<ReplyDraftResponse | null>(null)
@@ -21,7 +21,7 @@ export default function InboxPage() {
 
   useEffect(() => {
     getLeads().then(setLeads).catch(() => {})
-    getTemplates().then(setTemplates).catch(() => {})
+    getOutreachTemplates().then(setTemplates).catch(() => {})
   }, [])
 
   async function handleClassify() {
@@ -72,15 +72,16 @@ export default function InboxPage() {
           >
             <option value="">Select a template...</option>
             {templates.map((t) => (
-              <option key={t.intent} value={t.intent}>
-                {t.intent.charAt(0).toUpperCase() + t.intent.slice(1)} — {t.cta}
+              <option key={t.id} value={t.id}>
+                {t.name}
               </option>
             ))}
           </select>
           {selectedTemplate && (
-            <p className="mt-1 text-xs text-warm-gray italic">
-              Tone: {templates.find((t) => t.intent === selectedTemplate)?.tone}
-            </p>
+            <div className="mt-2 p-3 bg-soft-navy/50 rounded border border-warm-gray/10">
+              <p className="text-xs text-warm-gray mb-1">Subject: <span className="text-warm-cream">{templates.find((t) => t.id === selectedTemplate)?.subject}</span></p>
+              <p className="text-xs text-warm-gray whitespace-pre-wrap mt-2">{templates.find((t) => t.id === selectedTemplate)?.body}</p>
+            </div>
           )}
         </div>
 

@@ -52,7 +52,7 @@ class SnovService:
         params = {
             "access_token": self._get_access_token(),
             "industry": industry,
-            "limit": limit,
+            "limit": min(limit, 100),  # Snov.io max is 100 per request
         }
         if country:
             params["country"] = country

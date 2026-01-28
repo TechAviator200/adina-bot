@@ -198,6 +198,10 @@ app.add_middleware(
 
 @app.middleware("http")
 async def api_key_auth(request: Request, call_next):
+    # Skip auth for CORS preflight requests
+    if request.method == "OPTIONS":
+        response = await call_next(request)
+        return response
     if request.url.path.startswith("/api/"):
         # Allow bypassing auth for local development only
         if settings.disable_api_key_auth:
@@ -272,6 +276,138 @@ def get_templates():
             "cta": config.get("cta", ""),
         })
     return result
+
+
+# Outreach templates from the email response playbook PDF
+OUTREACH_TEMPLATES = [
+    {
+        "id": "close_friends",
+        "name": "Close Friends/Former Colleagues",
+        "subject": "Quick favor?",
+        "body": """Hey [Name],
+
+I officially launched my consulting firm, ADINA & Co., this month. I have built a team that works with growth stage founders as an operational co-founder to build and run the systems behind the business so they can focus on growth instead of day-to-day execution.
+
+Right now, we are looking to connect with founders in [CHOOSE 3: healthtech, wellness and beauty, creative, or service based] businesses who are scaling but are feeling overwhelmed operationally.
+
+If anyone comes to mind who could use hands-on operational leadership right now, I would really appreciate an introduction. Even one name helps.
+
+Warmly,
+Ify""",
+    },
+    {
+        "id": "professional_network",
+        "name": "Professional Network",
+        "subject": "Can you help me grow ADINA & Co.?",
+        "body": """Hi [Name],
+
+Hope you're well! I wanted to share that my team and I recently launched our consulting firm, ADINA & Co.
+
+We work with growth-stage founders as an operational co-founder to build and run the systems behind the business so they can focus on growth instead of day-to-day execution.
+
+Given your network in [industry or community], I thought you might know a few founders who are scaling but struggling to keep operations running effectively as the business grows. If anyone comes to mind, I would really appreciate an introduction.
+
+If helpful, I am happy to share a brief overview you can forward along.
+
+Thanks,
+Ify""",
+    },
+    {
+        "id": "direct_prospect",
+        "name": "Direct to Prospect",
+        "subject": "Is your business being slowed down?",
+        "body": """Hi [Name],
+
+I came across [Company Name] and was impressed by [specific thing - recent growth/expansion/product launch].
+
+At ADINA, we work with growth-stage companies at the point where execution starts to overwhelm leadership and team capacity. As the business grows, decisions bottleneck, teams slow down, and the systems that got them here aren't built for where they're going.
+
+Our team steps in as an operational co-founder to build and run the systems that allow companies to scale without adding leadership or team burden.
+
+If you are open to it, I would welcome a brief conversation to understand where things stand operationally and see if there is a fit.
+
+Here is my calendar if you would like to grab 30 minutes: [link]
+
+Best,
+Ify""",
+    },
+    {
+        "id": "direct_prospect_b2b",
+        "name": "Direct to Prospect (B2B)",
+        "subject": "Is your business being slowed down?",
+        "body": """Hi [Name],
+
+I came across [Company Name] and was impressed by [specific thing].
+
+At ADINA, we work with growth-stage founders at the point where they've become the bottleneck in their business. As the company grows, decisions pile up waiting for their approval, execution slows down, and the systems that got them here aren't built for where they're going.
+
+Our team steps in as an operational co-founder to build and run the systems that allow founders to scale without being stuck in every decision.
+
+I'd welcome a brief conversation to understand where you are operationally and see if there's a fit. Here's my calendar if 30 minutes works: [link]
+
+Best,
+Ify""",
+    },
+    {
+        "id": "qualifying",
+        "name": "Qualifying Email",
+        "subject": "Addressing [Prospect's Company]'s [key challenge]",
+        "body": """Hi [Prospect Name],
+
+I really enjoyed our conversation yesterday about how [Prospect's Company] is tackling [key challenge]. The way you're approaching [specific challenge mentioned by prospect] is particularly impressive.
+
+From what you shared, it sounds like finding solutions for [Priority 1], [Priority 2], and [Priority 3] is top of mind right now. I'm excited about the possibility of [product/service] helping you achieve those goals through:
+
+• [Solution 1] that specifically addresses [related challenge 1]
+• [Solution 2] which could optimize [related challenge 2]
+• [Solution 3] to help you streamline [related challenge 3]
+
+To make sure I'm giving you the most relevant information, I'd love to set up a quick call to dive deeper into your unique needs. Would you be open to a brief chat on [available dates and times]?
+
+Thanks again for your time.
+
+Best,
+[Your Name]""",
+    },
+    {
+        "id": "closing",
+        "name": "Closing the Sale",
+        "subject": "Let's get started, [Prospect Name]! Agreement attached.",
+        "body": """Hi [Prospect Name],
+
+I'm thrilled to be taking this next step with you and [Prospect's Company].
+
+You'll find the agreement attached for your review. Feel free to reach out if you have any questions or would like to discuss any specific details.
+
+Once you've signed, we'll start the onboarding process and get you up and running with [product/service] as smoothly as possible.
+
+We're truly invested in your success, and I can't wait to see the amazing things we'll achieve together.
+
+Best,
+[Your Name]""",
+    },
+    {
+        "id": "followup",
+        "name": "Follow-up Email",
+        "subject": "Checking in on your [product/service] experience",
+        "body": """Hi [Customer Name],
+
+I hope you've been enjoying [product/service].
+
+I'm reaching out to see how things are going since you started using [product/service]. Have you had a chance to fully explore [highlight some features]? Are you noticing any positive impact yet?
+
+I'm eager to make sure you're getting the most out of [product/service]. Feel free to ask if you have any questions or need help with anything.
+
+Best,
+[Your Name]""",
+    },
+]
+
+
+@app.get("/api/outreach-templates")
+def get_outreach_templates():
+    """Return outreach email templates from the ADINA playbook."""
+    return OUTREACH_TEMPLATES
 
 
 @app.get("/api/readiness", response_model=ReadinessResponse)
@@ -618,37 +754,8 @@ def discover_companies(request: CompanyDiscoverRequest):
     all_companies: List[DiscoveredCompany] = []
     messages = []
 
-    # Hunter Discover
-    if request.source in ("hunter", "both"):
-        if HunterService is None:
-            messages.append("Hunter.io service not available")
-        elif not settings.hunter_api_key:
-            messages.append("Hunter.io API key not configured")
-        else:
-            try:
-                hunter = HunterService()
-                hunter_results = hunter.discover_companies(
-                    industry=request.industry,
-                    country=request.country,
-                    size=request.size,
-                    limit=request.limit,
-                )
-                for company in hunter_results:
-                    all_companies.append(DiscoveredCompany(
-                        name=company.get("name", "Unknown"),
-                        domain=company.get("domain"),
-                        description=company.get("description"),
-                        industry=company.get("industry", request.industry),
-                        size=company.get("size"),
-                        location=company.get("location"),
-                        source="hunter",
-                    ))
-            except Exception as e:
-                logger.error("Hunter Discover error: %s", e)
-                messages.append(f"Hunter.io error: {str(e)}")
-
-    # Snov.io
-    if request.source in ("snov", "both"):
+    # Snov.io only - Hunter.io discovery requires paid plan
+    if request.source in ("snov", "both", "hunter"):
         if SnovService is None:
             messages.append("Snov.io service not available")
         elif not settings.snov_client_id or not settings.snov_client_secret:

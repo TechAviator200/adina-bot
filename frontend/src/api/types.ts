@@ -112,6 +112,14 @@ export interface OutreachTemplate {
   cta: string
 }
 
+// Outreach email templates from the ADINA playbook PDF
+export interface OutreachEmailTemplate {
+  id: string
+  name: string
+  subject: string
+  body: string
+}
+
 // Company Discovery Types
 
 export interface DiscoveredCompany {

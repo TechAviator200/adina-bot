@@ -1,5 +1,5 @@
 import apiClient from './client'
-import type { ReplyDraftResponse, SentEmail, OutreachTemplate } from './types'
+import type { ReplyDraftResponse, SentEmail, OutreachTemplate, OutreachEmailTemplate } from './types'
 
 export async function draftReply(leadId: number, inboundText: string): Promise<ReplyDraftResponse> {
   const { data } = await apiClient.post<ReplyDraftResponse>('/api/reply/draft', {
@@ -16,5 +16,10 @@ export async function getSentEmails(): Promise<SentEmail[]> {
 
 export async function getTemplates(): Promise<OutreachTemplate[]> {
   const { data } = await apiClient.get<OutreachTemplate[]>('/api/templates')
+  return data
+}
+
+export async function getOutreachTemplates(): Promise<OutreachEmailTemplate[]> {
+  const { data } = await apiClient.get<OutreachEmailTemplate[]>('/api/outreach-templates')
   return data
 }

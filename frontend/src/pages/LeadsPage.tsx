@@ -678,7 +678,7 @@ export default function LeadsPage() {
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-lg font-semibold text-warm-cream">Discover Companies by Industry</h2>
-                <p className="text-xs text-warm-gray mt-1">Browse companies for FREE. Credits only used when getting contacts.</p>
+                <p className="text-xs text-warm-gray mt-1">Powered by Snov.io. Requires credentials to be configured.</p>
               </div>
               <button onClick={() => setDiscoverOpen(false)} className="text-warm-gray hover:text-warm-cream">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -726,25 +726,7 @@ export default function LeadsPage() {
               </div>
             </div>
 
-            <div className="flex items-center gap-4 mb-4">
-              <div className="flex items-center gap-2">
-                <label className="text-xs text-warm-gray">Source:</label>
-                <div className="flex gap-1">
-                  {(['both', 'hunter', 'snov'] as const).map((src) => (
-                    <button
-                      key={src}
-                      onClick={() => setDiscoverSource(src)}
-                      className={`px-3 py-1 text-xs rounded transition-colors ${
-                        discoverSource === src
-                          ? 'bg-terracotta text-warm-cream'
-                          : 'bg-warm-cream/10 text-warm-gray hover:text-warm-cream'
-                      }`}
-                    >
-                      {src === 'both' ? 'Both' : src === 'hunter' ? 'Hunter.io' : 'Snov.io'}
-                    </button>
-                  ))}
-                </div>
-              </div>
+            <div className="flex items-center mb-4">
               <Button size="sm" onClick={handleDiscover} disabled={discoverLoading || !discoverIndustry.trim()}>
                 {discoverLoading ? (
                   <span className="flex items-center gap-1.5">

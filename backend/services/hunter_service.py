@@ -73,38 +73,16 @@ class HunterService:
         size: Optional[str] = None,
         limit: int = 100,
     ) -> List[dict]:
-        """Discover companies using Hunter Discover (FREE - no credits consumed for browsing)."""
-        params = {
-            "api_key": self._api_key(),
-            "limit": min(limit, 100),
-        }
-        if industry:
-            params["industry"] = industry
-        if country:
-            params["country"] = country
-        if size:
-            params["company_size"] = size
-
-        response = requests.get(
-            f"{self.BASE_URL}/companies/search",
-            params=params,
+        """
+        Hunter.io company discovery - NOT available on free tier.
+        This endpoint requires Hunter.io Discover (paid plan).
+        Returns empty list with a message for free tier users.
+        """
+        # Hunter.io /v2/companies/search is only available on paid plans
+        # The free tier only supports: email-finder, email-verifier, domain-search
+        raise RuntimeError(
+            "Hunter.io discovery requires paid plan - using Snov.io instead"
         )
-        if not response.ok:
-            self._raise_error(response)
-
-        data = response.json().get("data", {})
-        results = []
-        for company in data.get("companies", []):
-            results.append({
-                "name": company.get("name"),
-                "domain": company.get("domain"),
-                "description": company.get("description"),
-                "industry": company.get("industry") or industry,
-                "size": company.get("size"),
-                "location": company.get("country"),
-                "source": "hunter",
-            })
-        return results
 
     def get_company_info(self, domain: str) -> Optional[dict]:
         """Get detailed company information by domain."""
