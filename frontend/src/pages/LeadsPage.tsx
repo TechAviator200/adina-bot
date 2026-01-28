@@ -253,7 +253,7 @@ export default function LeadsPage() {
       setDiscoveredCompanies(result.companies)
       setDiscoverMessage(result.message)
       if (result.companies.length === 0 && !result.message) {
-        addToast('No companies found for this industry', 'info')
+        addToast('No companies found for this industry', 'success')
       } else {
         addToast(`Found ${result.companies.length} companies`, 'success')
       }
@@ -275,7 +275,7 @@ export default function LeadsPage() {
       const result = await getCompanyContacts(domain, source)
       setCompanyContacts((prev) => ({ ...prev, [domain]: result.contacts }))
       if (result.contacts.length === 0) {
-        addToast('No contacts found', 'info')
+        addToast('No contacts found', 'success')
       } else {
         addToast(`Found ${result.contacts.length} contacts`, 'success')
       }
