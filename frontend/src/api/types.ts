@@ -125,16 +125,16 @@ export interface OutreachEmailTemplate {
 export interface DiscoveredCompany {
   name: string
   domain: string | null
-  description: string | null
-  industry: string
-  size: string | null
+  website_url: string | null
+  phone: string | null
   location: string | null
+  description: string | null
   source: string
 }
 
 export interface CompanyDiscoverResponse {
-  total_found: number
   companies: DiscoveredCompany[]
+  cached: boolean
   message: string | null
 }
 

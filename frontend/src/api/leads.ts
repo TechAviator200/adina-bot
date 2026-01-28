@@ -81,19 +81,23 @@ export async function pullLeads(domains: string[]): Promise<{ new_leads_added: n
 
 // Company Discovery Functions
 
-export async function discoverCompanies(
-  industry: string,
-  country?: string,
-  size?: string,
-  source: string = 'both',
-  limit: number = 100
+export interface DiscoverCompaniesByIndustryRequest {
+  industry: string
+  country?: string
+  city?: string
+  source?: 'google' | 'google_maps'
+  limit?: number
+}
+
+export async function discoverCompaniesByIndustry(
+  request: DiscoverCompaniesByIndustryRequest
 ): Promise<CompanyDiscoverResponse> {
   const { data } = await apiClient.post<CompanyDiscoverResponse>('/api/companies/discover', {
-    industry,
-    country: country || null,
-    size: size || null,
-    source,
-    limit,
+    industry: request.industry,
+    country: request.country || null,
+    city: request.city || null,
+    source: request.source || 'google_maps',
+    limit: request.limit ?? 30,
   })
   return data
 }

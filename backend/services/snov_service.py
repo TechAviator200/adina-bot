@@ -49,8 +49,8 @@ class SnovService:
         limit: int = 100,
     ) -> List[dict]:
         """Search for companies by industry using Snov.io Database Search."""
+        token = self._get_access_token()
         params = {
-            "access_token": self._get_access_token(),
             "industry": industry,
             "limit": min(limit, 100),  # Snov.io max is 100 per request
         }
@@ -62,6 +62,7 @@ class SnovService:
         response = requests.post(
             f"{self.BASE_URL}/v2/company-list",
             json=params,
+            headers={"Authorization": f"Bearer {token}"},
         )
         if not response.ok:
             self._raise_error(response)

@@ -34,11 +34,12 @@ To disable API key auth for local development, set:
 WARNING: Never set DISABLE_API_KEY_AUTH=true in production!
 """
 import csv
+import hashlib
 import io
 import json
 import logging
 import os
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
 
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Query, Request
@@ -49,7 +50,7 @@ from sqlalchemy import func as sql_func, text
 
 from app.settings import settings
 from app.db import Base, engine, get_db
-from app.models import Lead, SentEmail, DailyEmailCount
+from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache
 from app.schemas import (
     HealthResponse,
     ReadinessCheck,
@@ -117,6 +118,12 @@ try:
 except ImportError:
     SnovService = None  # type: ignore
 
+# SerpAPI service for company discovery
+try:
+    from services.serpapi_service import SerpAPIService
+except ImportError:
+    SerpAPIService = None  # type: ignore
+
 # Response playbook for templates
 from app.utils.response_playbook import RESPONSE_PLAYBOOK
 
@@ -135,6 +142,11 @@ if HunterService is None:
 if SnovService is None:
     logger.warning(
         "Snov.io disabled: service not available"
+    )
+
+if SerpAPIService is None:
+    logger.warning(
+        "SerpAPI disabled: service not available"
     )
 
 if gmail is None:
@@ -176,6 +188,8 @@ async def startup_event():
     logger.info("Adina Bot API startup complete")
 
 # CORS middleware for frontend
+
+# CORS origins for local dev and deployed frontend
 _cors_origins = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -183,6 +197,8 @@ _cors_origins = [
     "http://127.0.0.1:5173",
     "http://localhost:5174",
     "http://127.0.0.1:5174",
+    # Add your deployed frontend domain below:
+    "https://adina-bot.onrender.com",
 ]
 _frontend_url = os.environ.get("FRONTEND_URL")
 if _frontend_url:
@@ -242,6 +258,11 @@ def health_check():
         status="healthy",
         timestamp=datetime.now(timezone.utc),
     )
+
+
+@app.get("/ready")
+def readiness_check():
+    return {"status": "ready"}
 
 
 @app.get("/api/config")
@@ -736,69 +757,162 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
     )
 
 
-# Company Discovery Endpoints (Hunter Discover + Snov.io)
+# Company Discovery Endpoints (SerpAPI)
+
+def compute_query_hash(
+    source: str,
+    industry: str,
+    country: Optional[str],
+    city: Optional[str],
+    limit: int,
+    query_text: str,
+) -> str:
+    payload = {
+        "source": source,
+        "industry": industry,
+        "country": country,
+        "city": city,
+        "limit": limit,
+        "query_text": query_text,
+    }
+    raw = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def get_cached_results(db: Session, query_hash: str) -> Optional[List[dict]]:
+    now = datetime.now(timezone.utc)
+    cached = (
+        db.query(CompanyDiscoveryCache)
+        .filter(CompanyDiscoveryCache.query_hash == query_hash)
+        .filter(CompanyDiscoveryCache.expires_at > now)
+        .first()
+    )
+    if not cached:
+        return None
+    try:
+        return json.loads(cached.results_json)
+    except (TypeError, ValueError):
+        return None
+
+
+def set_cache_results(
+    db: Session,
+    query_hash: str,
+    payload: List[dict],
+    ttl_days: int,
+    source: str,
+    industry: str,
+    country: Optional[str],
+    city: Optional[str],
+    query_text: str,
+    limit: int,
+) -> None:
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(days=ttl_days)
+    serialized = json.dumps(payload)
+    cached = db.query(CompanyDiscoveryCache).filter(
+        CompanyDiscoveryCache.query_hash == query_hash
+    ).first()
+    if cached:
+        cached.results_json = serialized
+        cached.created_at = now
+        cached.expires_at = expires_at
+        cached.source = source
+        cached.industry = industry
+        cached.country = country
+        cached.city = city
+        cached.query_text = query_text
+        cached.limit = limit
+    else:
+        db.add(
+            CompanyDiscoveryCache(
+                query_hash=query_hash,
+                source=source,
+                industry=industry,
+                country=country,
+                city=city,
+                query_text=query_text,
+                limit=limit,
+                results_json=serialized,
+                expires_at=expires_at,
+            )
+        )
+    db.commit()
+
 
 @app.post("/api/companies/discover", response_model=CompanyDiscoverResponse)
-def discover_companies(request: CompanyDiscoverRequest):
+def discover_companies(request: CompanyDiscoverRequest, db: Session = Depends(get_db)):
     """
-    Discover companies by industry using Hunter Discover and/or Snov.io.
+    Discover companies by industry using SerpAPI.
 
-    This is FREE - no credits consumed for browsing companies.
     Credits are only used when revealing contact emails via /api/companies/{domain}/contacts.
-
-    Source options:
-    - "hunter": Use Hunter Discover only
-    - "snov": Use Snov.io only
-    - "both": Use both services (default)
     """
-    all_companies: List[DiscoveredCompany] = []
-    messages = []
+    if not settings.serpapi_api_key:
+        return CompanyDiscoverResponse(companies=[], cached=False, message="SerpAPI not configured")
 
-    # Snov.io only - Hunter.io discovery requires paid plan
-    if request.source in ("snov", "both", "hunter"):
-        if SnovService is None:
-            messages.append("Snov.io service not available")
-        elif not settings.snov_client_id or not settings.snov_client_secret:
-            messages.append("Snov.io credentials not configured")
-        else:
-            try:
-                snov = SnovService()
-                snov_results = snov.search_by_industry(
-                    industry=request.industry,
-                    country=request.country,
-                    size=request.size,
-                    limit=request.limit,
-                )
-                for company in snov_results:
-                    all_companies.append(DiscoveredCompany(
-                        name=company.get("name", "Unknown"),
-                        domain=company.get("domain"),
-                        description=company.get("description"),
-                        industry=company.get("industry", request.industry),
-                        size=company.get("size"),
-                        location=company.get("location"),
-                        source="snov",
-                    ))
-            except Exception as e:
-                logger.error("Snov.io error: %s", e)
-                messages.append(f"Snov.io error: {str(e)}")
+    if SerpAPIService is None:
+        return CompanyDiscoverResponse(companies=[], cached=False, message="SerpAPI service not available")
 
-    # Deduplicate by domain (prefer first occurrence)
-    seen_domains = set()
-    unique_companies = []
-    for company in all_companies:
-        domain_key = (company.domain or company.name).lower()
-        if domain_key not in seen_domains:
-            seen_domains.add(domain_key)
-            unique_companies.append(company)
-
-    message = "; ".join(messages) if messages else None
-
-    return CompanyDiscoverResponse(
-        total_found=len(unique_companies),
-        companies=unique_companies,
-        message=message,
+    requested_limit = request.limit or 30
+    limit = max(1, min(int(requested_limit), 50))
+    source = request.source or "google_maps"
+    query_text = " ".join(
+        p for p in [request.industry, request.city, request.country] if p
     )
+    query_hash = compute_query_hash(
+        source=source,
+        industry=request.industry,
+        country=request.country,
+        city=request.city,
+        limit=limit,
+        query_text=query_text,
+    )
+
+    cached_results = get_cached_results(db, query_hash)
+    if cached_results is not None:
+        companies = [DiscoveredCompany(**item) for item in cached_results]
+        return CompanyDiscoverResponse(companies=companies, cached=True, message=None)
+
+    serpapi = SerpAPIService()
+    try:
+        if source == "google_maps":
+            results = serpapi.search_companies_maps(
+                industry=request.industry,
+                country=request.country,
+                city=request.city,
+                limit=limit,
+            )
+        else:
+            results = serpapi.search_companies_google(
+                industry=request.industry,
+                country=request.country,
+                city=request.city,
+                limit=limit,
+            )
+    except Exception as exc:
+        logger.error("SerpAPI discovery error: %s", exc)
+        return CompanyDiscoverResponse(companies=[], cached=False, message=str(exc))
+
+    if not results:
+        message = "SerpAPI returned no results"
+        return CompanyDiscoverResponse(companies=[], cached=False, message=message)
+
+    ttl_days = max(1, int(settings.serpapi_cache_ttl_days or 7))
+    set_cache_results(
+        db=db,
+        query_hash=query_hash,
+        payload=results,
+        ttl_days=ttl_days,
+        source=source,
+        industry=request.industry,
+        country=request.country,
+        city=request.city,
+        query_text=query_text,
+        limit=limit,
+    )
+
+    companies = [DiscoveredCompany(**item) for item in results]
+    return CompanyDiscoverResponse(companies=companies, cached=False, message=None)
 
 
 @app.post("/api/companies/{domain}/contacts", response_model=CompanyContactsResponse)
@@ -811,6 +925,16 @@ def get_company_contacts(domain: str, request: CompanyContactsRequest = None):
     Returns email addresses, titles, and LinkedIn URLs for contacts at the company.
     """
     source = request.source if request else "hunter"
+    if source in ("google", "google_maps"):
+        if HunterService is not None and settings.hunter_api_key:
+            source = "hunter"
+        elif SnovService is not None and settings.snov_client_id and settings.snov_client_secret:
+            source = "snov"
+        else:
+            raise HTTPException(
+                status_code=503,
+                detail="No contact provider configured for Google-discovered companies",
+            )
     contacts: List[ExecutiveContact] = []
     company_name = None
     messages = []

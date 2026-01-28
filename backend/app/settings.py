@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     snov_client_secret: Optional[str] = None
     google_cse_api_key: Optional[str] = None
     google_cse_cx: Optional[str] = None
+    serpapi_api_key: Optional[str] = None
+    serpapi_cache_ttl_days: int = 7
     disable_api_key_auth: bool = False  # Set DISABLE_API_KEY_AUTH=true for local dev only
 
     @property
@@ -61,10 +63,11 @@ settings = Settings()
 
 # Log which keys are configured (never log actual values)
 logger.debug(
-    "Settings loaded: API_KEY set? %s, HUNTER_API_KEY set? %s, SNOV_CLIENT_ID set? %s, GOOGLE_CSE_API_KEY set? %s, GOOGLE_CSE_CX set? %s",
+    "Settings loaded: API_KEY set? %s, HUNTER_API_KEY set? %s, SNOV_CLIENT_ID set? %s, GOOGLE_CSE_API_KEY set? %s, GOOGLE_CSE_CX set? %s, SERPAPI_API_KEY set? %s",
     settings.api_key is not None,
     settings.hunter_api_key is not None,
     settings.snov_client_id is not None,
     settings.google_cse_api_key is not None,
     settings.google_cse_cx is not None,
+    settings.serpapi_api_key is not None,
 )

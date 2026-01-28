@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
-import { getLeads, uploadLeads, scoreLead, draftLead, approveLead, unapproveLead, workflowSend, pullLeads, updateLeadStatus, discoverCompanies, getCompanyContacts, importCompaniesAsLeads } from '../api/leads'
+import { getLeads, uploadLeads, scoreLead, draftLead, approveLead, unapproveLead, workflowSend, pullLeads, updateLeadStatus, discoverCompaniesByIndustry, getCompanyContacts, importCompaniesAsLeads } from '../api/leads'
 import { getGmailStatus } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
@@ -28,11 +28,13 @@ export default function LeadsPage() {
   const [discoverOpen, setDiscoverOpen] = useState(false)
   const [discoverIndustry, setDiscoverIndustry] = useState('')
   const [discoverCountry, setDiscoverCountry] = useState('')
-  const [discoverSize, setDiscoverSize] = useState('')
-  const [discoverSource, setDiscoverSource] = useState<'hunter' | 'snov' | 'both'>('both')
+  const [discoverCity, setDiscoverCity] = useState('')
+  const [discoverSource, setDiscoverSource] = useState<'google' | 'google_maps'>('google_maps')
+  const [discoverLimit, setDiscoverLimit] = useState(30)
   const [discoverLoading, setDiscoverLoading] = useState(false)
   const [discoveredCompanies, setDiscoveredCompanies] = useState<DiscoveredCompany[]>([])
   const [discoverMessage, setDiscoverMessage] = useState<string | null>(null)
+  const [discoverCached, setDiscoverCached] = useState(false)
   const [selectedCompanies, setSelectedCompanies] = useState<Set<string>>(new Set())
   const [companyContacts, setCompanyContacts] = useState<Record<string, ExecutiveContact[]>>({})
   const [loadingContacts, setLoadingContacts] = useState<string | null>(null)
@@ -241,17 +243,20 @@ export default function LeadsPage() {
     setDiscoverLoading(true)
     setDiscoveredCompanies([])
     setDiscoverMessage(null)
+    setDiscoverCached(false)
     setSelectedCompanies(new Set())
     setCompanyContacts({})
     try {
-      const result = await discoverCompanies(
-        discoverIndustry.trim(),
-        discoverCountry.trim() || undefined,
-        discoverSize || undefined,
-        discoverSource
-      )
+      const result = await discoverCompaniesByIndustry({
+        industry: discoverIndustry.trim(),
+        country: discoverCountry.trim() || undefined,
+        city: discoverCity.trim() || undefined,
+        source: discoverSource,
+        limit: discoverLimit,
+      })
       setDiscoveredCompanies(result.companies)
       setDiscoverMessage(result.message)
+      setDiscoverCached(result.cached)
       if (result.companies.length === 0 && !result.message) {
         addToast('No companies found for this industry', 'success')
       } else {
@@ -314,8 +319,8 @@ export default function LeadsPage() {
             name: company.name,
             domain: company.domain,
             description: company.description,
-            industry: company.industry,
-            size: company.size,
+            industry: discoverIndustry.trim() || 'Unknown',
+            size: null,
             location: company.location,
             contact_name: contact.name,
             contact_role: contact.title,
@@ -328,8 +333,8 @@ export default function LeadsPage() {
             name: company.name,
             domain: company.domain,
             description: company.description,
-            industry: company.industry,
-            size: company.size,
+            industry: discoverIndustry.trim() || 'Unknown',
+            size: null,
             location: company.location,
             contact_name: null,
             contact_role: null,
@@ -671,14 +676,14 @@ export default function LeadsPage() {
         </div>
       )}
 
-      {/* Discover Companies Modal (Hunter Discover + Snov.io) */}
+      {/* Discover Companies Modal (SerpAPI) */}
       {discoverOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
           <div className="bg-soft-navy rounded-lg border border-warm-gray/20 p-6 w-full max-w-3xl shadow-xl my-4">
             <div className="flex items-center justify-between mb-4">
               <div>
                 <h2 className="text-lg font-semibold text-warm-cream">Discover Companies by Industry</h2>
-                <p className="text-xs text-warm-gray mt-1">Powered by Snov.io. Requires credentials to be configured.</p>
+                <p className="text-xs text-warm-gray mt-1">Powered by SerpAPI. Maps mode includes phone and address when available.</p>
               </div>
               <button onClick={() => setDiscoverOpen(false)} className="text-warm-gray hover:text-warm-cream">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -710,18 +715,47 @@ export default function LeadsPage() {
                 />
               </div>
               <div>
-                <label className="block text-xs text-warm-gray mb-1">Company Size</label>
+                <label className="block text-xs text-warm-gray mb-1">City</label>
+                <input
+                  type="text"
+                  value={discoverCity}
+                  onChange={(e) => setDiscoverCity(e.target.value)}
+                  placeholder="e.g. Austin"
+                  className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                />
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 mb-4">
+              <div className="flex items-center gap-2">
+                <span className="text-xs text-warm-gray">Source</span>
+                <div className="flex rounded-md border border-warm-gray/20 overflow-hidden">
+                  <button
+                    type="button"
+                    onClick={() => setDiscoverSource('google_maps')}
+                    className={`px-3 py-1.5 text-xs ${discoverSource === 'google_maps' ? 'bg-terracotta text-warm-cream' : 'text-warm-gray hover:text-warm-cream'}`}
+                  >
+                    Maps (recommended)
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setDiscoverSource('google')}
+                    className={`px-3 py-1.5 text-xs ${discoverSource === 'google' ? 'bg-terracotta text-warm-cream' : 'text-warm-gray hover:text-warm-cream'}`}
+                  >
+                    Web search
+                  </button>
+                </div>
+              </div>
+              <div className="flex items-center gap-2">
+                <label className="text-xs text-warm-gray">Limit</label>
                 <select
-                  value={discoverSize}
-                  onChange={(e) => setDiscoverSize(e.target.value)}
-                  className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm focus:outline-none focus:border-terracotta"
+                  value={discoverLimit}
+                  onChange={(e) => setDiscoverLimit(Number(e.target.value))}
+                  className="px-3 py-1.5 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-xs focus:outline-none focus:border-terracotta"
                 >
-                  <option value="">Any size</option>
-                  <option value="1-10">1-10</option>
-                  <option value="11-50">11-50</option>
-                  <option value="51-200">51-200</option>
-                  <option value="201-500">201-500</option>
-                  <option value="500+">500+</option>
+                  <option value={20}>20</option>
+                  <option value={30}>30</option>
+                  <option value={50}>50</option>
                 </select>
               </div>
             </div>
@@ -750,77 +784,88 @@ export default function LeadsPage() {
             {discoveredCompanies.length > 0 && (
               <>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-warm-gray">{discoveredCompanies.length} companies found</span>
+                  <div className="flex items-center gap-2 text-xs text-warm-gray">
+                    <span>{discoveredCompanies.length} companies found</span>
+                    {discoverCached && (
+                      <span className="px-2 py-0.5 rounded-full bg-warm-gray/20 text-warm-gray">Cached</span>
+                    )}
+                  </div>
                   {selectedCompanies.size > 0 && (
                     <Button size="sm" onClick={handleImportSelected} disabled={importingLeads}>
                       {importingLeads ? 'Importing...' : `Import ${selectedCompanies.size} Selected`}
                     </Button>
                   )}
                 </div>
-                <div className="max-h-80 overflow-y-auto space-y-2">
+                <div className="max-h-80 overflow-y-auto border border-warm-gray/10 rounded-lg">
+                  <div className="grid grid-cols-12 gap-2 px-3 py-2 text-xs text-warm-gray border-b border-warm-gray/10">
+                    <div className="col-span-3">Company</div>
+                    <div className="col-span-2">Website</div>
+                    <div className="col-span-2">Phone</div>
+                    <div className="col-span-2">Location</div>
+                    <div className="col-span-2">Description</div>
+                    <div className="col-span-1 text-right">Actions</div>
+                  </div>
                   {discoveredCompanies.map((company) => {
                     const key = company.domain || company.name
                     const contacts = companyContacts[company.domain || ''] || []
                     const isSelected = selectedCompanies.has(key)
+                    const canGetContacts = Boolean(company.domain)
                     return (
-                      <div
-                        key={key}
-                        className={`p-3 rounded-lg border transition-colors ${
-                          isSelected
-                            ? 'bg-terracotta/20 border-terracotta/40'
-                            : 'bg-soft-navy/50 border-warm-gray/10 hover:border-warm-gray/30'
-                        }`}
-                      >
-                        <div className="flex items-start justify-between gap-3">
-                          <div className="flex items-start gap-3">
+                      <div key={key} className="border-b border-warm-gray/10 last:border-b-0">
+                        <div
+                          className={`grid grid-cols-12 gap-2 px-3 py-2 text-xs ${
+                            isSelected ? 'bg-terracotta/10' : ''
+                          }`}
+                        >
+                          <div className="col-span-3 flex items-start gap-2">
                             <input
                               type="checkbox"
                               checked={isSelected}
                               onChange={() => toggleCompanySelect(key)}
-                              className="accent-terracotta mt-1"
+                              className="accent-terracotta mt-0.5"
                             />
                             <div>
                               <div className="flex items-center gap-2">
-                                <span className="text-sm font-medium text-warm-cream">{company.name}</span>
-                                <span className="text-xs px-1.5 py-0.5 rounded bg-warm-gray/20 text-warm-gray">
+                                <span className="text-warm-cream font-medium">{company.name}</span>
+                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-warm-gray/20 text-warm-gray">
                                   {company.source}
                                 </span>
                               </div>
                               {company.domain && (
-                                <p className="text-xs text-warm-gray">{company.domain}</p>
+                                <div className="text-warm-gray/70">{company.domain}</div>
                               )}
-                              {company.description && (
-                                <p className="text-xs text-warm-gray/70 mt-1 line-clamp-2">{company.description}</p>
-                              )}
-                              <div className="flex gap-3 mt-1 text-xs text-warm-gray">
-                                {company.location && <span>{company.location}</span>}
-                                {company.size && <span>{company.size} employees</span>}
-                              </div>
                             </div>
                           </div>
-                          <div className="flex-shrink-0">
-                            {company.domain && (
-                              <Button
-                                size="sm"
-                                variant="secondary"
-                                onClick={() => handleGetContacts(company.domain!, company.source)}
-                                disabled={loadingContacts === company.domain}
-                              >
-                                {loadingContacts === company.domain ? 'Loading...' : contacts.length > 0 ? `${contacts.length} Contacts` : 'Get Contacts'}
-                              </Button>
-                            )}
+                          <div className="col-span-2 text-warm-gray/80 truncate">
+                            {company.website_url || company.domain || '—'}
+                          </div>
+                          <div className="col-span-2 text-warm-gray/80 truncate">
+                            {company.phone || '—'}
+                          </div>
+                          <div className="col-span-2 text-warm-gray/80 truncate">
+                            {company.location || '—'}
+                          </div>
+                          <div className="col-span-2 text-warm-gray/80 line-clamp-2">
+                            {company.description || '—'}
+                          </div>
+                          <div className="col-span-1 text-right">
+                            <Button
+                              size="sm"
+                              variant="secondary"
+                              onClick={() => handleGetContacts(company.domain || '', company.source)}
+                              disabled={!canGetContacts || loadingContacts === company.domain}
+                            >
+                              {loadingContacts === company.domain ? 'Loading...' : contacts.length > 0 ? `${contacts.length} Contacts` : 'Get Contacts'}
+                            </Button>
                           </div>
                         </div>
-                        {/* Show contacts */}
                         {contacts.length > 0 && (
-                          <div className="mt-2 pt-2 border-t border-warm-gray/10 space-y-1">
+                          <div className="px-3 pb-2 pt-0 border-t border-warm-gray/10 space-y-1">
                             {contacts.slice(0, 5).map((contact, idx) => (
                               <div key={idx} className="flex items-center gap-2 text-xs">
                                 <span className="text-warm-cream">{contact.name}</span>
                                 {contact.title && <span className="text-warm-gray">- {contact.title}</span>}
-                                {contact.email && (
-                                  <span className="text-terracotta">{contact.email}</span>
-                                )}
+                                {contact.email && <span className="text-terracotta">{contact.email}</span>}
                               </div>
                             ))}
                             {contacts.length > 5 && (

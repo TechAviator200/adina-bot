@@ -47,3 +47,19 @@ class DailyEmailCount(Base):
     id = Column(Integer, primary_key=True, index=True)
     date = Column(Date, nullable=False, unique=True, index=True)
     count = Column(Integer, default=0)
+
+
+class CompanyDiscoveryCache(Base):
+    __tablename__ = "company_discovery_cache"
+
+    id = Column(Integer, primary_key=True, index=True)
+    query_hash = Column(String, unique=True, index=True, nullable=False)
+    source = Column(String, nullable=False)
+    industry = Column(String, nullable=False)
+    country = Column(String, nullable=True)
+    city = Column(String, nullable=True)
+    query_text = Column(Text, nullable=False)
+    limit = Column(Integer, nullable=False)
+    results_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), index=True, nullable=False)

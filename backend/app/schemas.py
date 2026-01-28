@@ -215,29 +215,29 @@ class DiscoverLeadsResponse(BaseModel):
     message: Optional[str] = None  # Maintenance or status message
 
 
-# Company Discovery Schemas (Hunter Discover + Snov.io)
+# Company Discovery Schemas (SerpAPI)
 
 class CompanyDiscoverRequest(BaseModel):
     industry: str
     country: Optional[str] = None
-    size: Optional[str] = None  # "1-10", "11-50", "51-200", "201-500", "500+"
-    source: str = "both"  # "hunter", "snov", or "both"
-    limit: int = 100
+    city: Optional[str] = None
+    source: str = "google_maps"  # "google" or "google_maps"
+    limit: Optional[int] = 30
 
 
 class DiscoveredCompany(BaseModel):
     name: str
     domain: Optional[str] = None
-    description: Optional[str] = None
-    industry: str
-    size: Optional[str] = None
+    website_url: Optional[str] = None
+    phone: Optional[str] = None
     location: Optional[str] = None
-    source: str  # "hunter" or "snov"
+    description: Optional[str] = None
+    source: str  # "google" or "google_maps"
 
 
 class CompanyDiscoverResponse(BaseModel):
-    total_found: int
     companies: List[DiscoveredCompany]
+    cached: bool
     message: Optional[str] = None
 
 
