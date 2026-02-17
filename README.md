@@ -82,6 +82,32 @@ adina-bot/
 
 **Gmail daily cap (100 emails).** Hard-coded in the backend, not configurable via UI. Protects the operator's domain reputation and stays well under Gmail's sending limits. A customer deployment would make this configurable per-domain.
 
+## Security posture & boundaries
+
+**Current scope:** Single-tenant pilot tool operated by the deployer. This is not a production SaaS — there is no multi-user auth, no audit log, and the API key is a shared secret. The security controls below are appropriate for this scope and are documented honestly.
+
+**Automated checks (GitHub Actions):**
+- **Secret scanning** — [gitleaks](https://github.com/gitleaks/gitleaks) runs on every push and PR to catch accidentally committed credentials.
+- **Python CVE scan** — `pip-audit` checks `backend/requirements.txt` against known vulnerability databases.
+- **Python static analysis** — `bandit` scans `backend/app/` for common security anti-patterns (hardcoded passwords, insecure deserialization, etc.).
+- **Frontend dependency audit** — `npm audit` flags high-severity vulnerabilities in `frontend/` dependencies.
+- **CodeQL** — GitHub's semantic analysis runs weekly and on every PR for both Python and JavaScript/TypeScript.
+- **Dependabot** — Automated PRs for dependency updates (pip, npm, GitHub Actions) on a weekly cadence.
+
+**Outbound action safeguards:**
+- All emails require explicit operator approval before sending.
+- Hard daily cap of 100 emails enforced server-side.
+- Demo mode (`DEMO_MODE=true`) blocks all real sends entirely.
+
+**What this repo does NOT claim:**
+- Production-grade multi-tenant security.
+- SOC 2 or equivalent compliance.
+- Protection against a compromised deployment environment.
+
+**Production hardening path:** SSO/OAuth with per-user sessions → RBAC (operator vs. viewer) → structured audit logs → per-tenant data isolation → rate limiting per API key → environment-enforced `DISABLE_API_KEY_AUTH` block → secret rotation policy.
+
+For the full threat model and detailed security documentation, see [docs/security.md](docs/security.md).
+
 ## What I'd do next in a customer deployment
 
 - **Per-tenant isolation.** Move from shared API key to OAuth + org-scoped data. Each customer gets their own knowledge pack and scoring criteria.

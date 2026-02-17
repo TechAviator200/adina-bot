@@ -1,7 +1,10 @@
-# Environment files (contain secrets)
+# Environment & secrets
 .env
+.env.*
 *.env.local
 .env.*.local
+backend/.env*
+frontend/.env*
 
 # Python
 __pycache__/
@@ -33,10 +36,26 @@ Thumbs.db
 
 # Credentials (sensitive)
 credentials/
+token.pickle
+token.json
+client_secret*.json
+credentials.json
+oauth_token*.json
+*.p12
+*.pem
+*.key
 *.json
 !package.json
 !package-lock.json
 !tsconfig.json
+!tsconfig.*.json
+
+# Generated / local data artifacts (do not commit)
+backend/app/knowledge_pack.json
+backend/app/response_playbook.json
+
+# TypeScript build artifacts (do not commit)
+frontend/tsconfig.tsbuildinfo
 
 # Logs
 *.log
