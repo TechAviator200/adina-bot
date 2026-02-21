@@ -151,6 +151,107 @@ def main():
             else:
                 results.append(("SerpAPI response structure", "FAIL", 200, f"Missing 'companies' key in response"))
 
+    # 9. Test lead profile endpoint
+    # First, get any existing lead ID
+    leads_resp = test_endpoint(
+        "GET /api/leads (for profile test)",
+        "GET",
+        "/api/leads",
+        headers=HEADERS,
+        expect_status=(200,)
+    )
+    lead_id = None
+    if leads_resp and isinstance(leads_resp.get("body"), list) and leads_resp["body"]:
+        lead_id = leads_resp["body"][0].get("id")
+
+    if lead_id:
+        profile_resp = test_endpoint(
+            f"GET /api/leads/{lead_id}/profile",
+            "GET",
+            f"/api/leads/{lead_id}/profile",
+            headers=HEADERS,
+            expect_status=(200,)
+        )
+        if profile_resp and isinstance(profile_resp.get("body"), dict):
+            p = profile_resp["body"]
+            required_fields = {"id", "company", "status", "contacts", "industry"}
+            missing = required_fields - set(p.keys())
+            if missing:
+                results.append(("Lead profile structure", "FAIL", 200, f"Missing fields: {missing}"))
+            else:
+                results.append(("Lead profile structure", "PASS", 200, f"company={p.get('company')}, contacts={len(p.get('contacts', []))}"))
+    else:
+        results.append(("Lead profile (no leads to test)", "PASS", "SKIP", "No leads in DB"))
+
+    # 10. Test import with profile fields (phone, website_url, contacts)
+    import_payload = {
+        "companies": [
+            {
+                "name": "Smoke Test Co Profile",
+                "domain": "smoketestprofile.com",
+                "description": "A test company for profile fields",
+                "industry": "Technology",
+                "size": None,
+                "location": "Austin, TX",
+                "phone": "+1-555-0199",
+                "website_url": "https://smoketestprofile.com",
+                "contact_name": "Alice Test",
+                "contact_role": "CEO",
+                "contact_email": "alice@smoketestprofile.com",
+                "contacts": [
+                    {"name": "Alice Test", "title": "CEO", "email": "alice@smoketestprofile.com", "source": "hunter"},
+                    {"name": "Bob Test", "title": "CTO", "email": "bob@smoketestprofile.com", "source": "hunter"},
+                ],
+                "source": "google_maps"
+            }
+        ]
+    }
+    import_resp = test_endpoint(
+        "POST /api/leads/import (profile fields)",
+        "POST",
+        "/api/leads/import",
+        headers=HEADERS,
+        json_data=import_payload,
+        expect_status=(200,)
+    )
+    if import_resp and isinstance(import_resp.get("body"), dict):
+        body = import_resp["body"]
+        if body.get("imported", 0) > 0:
+            # Verify profile was persisted: fetch the newly created lead
+            imported_lead = body.get("leads", [{}])[0]
+            new_id = imported_lead.get("id")
+            if new_id:
+                profile_check = test_endpoint(
+                    "GET profile after import (contacts_json)",
+                    "GET",
+                    f"/api/leads/{new_id}/profile",
+                    headers=HEADERS,
+                    expect_status=(200,)
+                )
+                if profile_check and isinstance(profile_check.get("body"), dict):
+                    p = profile_check["body"]
+                    contacts = p.get("contacts", [])
+                    phone = p.get("phone")
+                    if len(contacts) >= 2:
+                        results.append(("Import persists contacts list", "PASS", 200, f"{len(contacts)} contacts stored"))
+                    else:
+                        results.append(("Import persists contacts list", "FAIL", 200, f"Expected ≥2 contacts, got {len(contacts)}"))
+                    if phone == "+1-555-0199":
+                        results.append(("Import persists phone field", "PASS", 200, f"phone={phone}"))
+                    else:
+                        results.append(("Import persists phone field", "FAIL", 200, f"Expected +1-555-0199, got {phone}"))
+        elif body.get("skipped", 0) > 0:
+            results.append(("POST /api/leads/import (profile fields)", "PASS", 200, "Lead already exists (skipped)"))
+
+    # 11. Gmail status check (informational)
+    test_endpoint(
+        "GET /api/gmail/status",
+        "GET",
+        "/api/gmail/status",
+        headers=HEADERS,
+        expect_status=(200,)
+    )
+
     # Print results table
     print()
     print("=" * 80)

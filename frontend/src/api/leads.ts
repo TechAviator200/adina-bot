@@ -1,6 +1,7 @@
 import apiClient from './client'
 import type {
   Lead,
+  LeadProfile,
   UploadResponse,
   ScoreResponse,
   DraftResponse,
@@ -21,6 +22,11 @@ export async function getLeads(): Promise<Lead[]> {
 
 export async function getLead(id: number): Promise<Lead> {
   const { data } = await apiClient.get<Lead>(`/api/leads/${id}`)
+  return data
+}
+
+export async function getLeadProfile(id: number): Promise<LeadProfile> {
+  const { data } = await apiClient.get<LeadProfile>(`/api/leads/${id}/profile`)
   return data
 }
 

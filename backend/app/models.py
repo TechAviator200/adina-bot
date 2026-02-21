@@ -26,6 +26,10 @@ class Lead(Base):
     source = Column(String, nullable=True)
     source_url = Column(String, nullable=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    # Profile fields (added for company profile panel)
+    phone = Column(String, nullable=True)
+    linkedin_url = Column(String, nullable=True)
+    contacts_json = Column(Text, nullable=True)  # JSON: [{name,title,email,linkedin_url,source}]
 
 
 class SentEmail(Base):

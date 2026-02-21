@@ -18,6 +18,33 @@ export interface Lead {
   source: string | null
   source_url: string | null
   created_at: string
+  phone: string | null
+  linkedin_url: string | null
+  contacts_json: string | null  // JSON string: ProfileContact[]
+}
+
+export interface ProfileContact {
+  name: string
+  title: string | null
+  email: string | null
+  linkedin_url: string | null
+  source: string | null
+}
+
+export interface LeadProfile {
+  id: number
+  company: string
+  website: string | null
+  phone: string | null
+  location: string | null
+  description: string | null
+  linkedin_url: string | null
+  contacts: ProfileContact[]
+  status: string
+  source: string | null
+  industry: string
+  contact_name: string | null
+  contact_email: string | null
 }
 
 export interface UploadResponse {
@@ -160,9 +187,12 @@ export interface ImportCompanyRequest {
   industry: string
   size: string | null
   location: string | null
+  phone: string | null
+  website_url: string | null
   contact_name: string | null
   contact_role: string | null
   contact_email: string | null
+  contacts: ProfileContact[] | null  // Full contacts list for contacts_json
   source: string
 }
 

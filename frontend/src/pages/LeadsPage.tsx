@@ -1,8 +1,13 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { getLeads, uploadLeads, scoreLead, draftLead, approveLead, unapproveLead, workflowSend, pullLeads, updateLeadStatus, discoverCompaniesByIndustry, getCompanyContacts, importCompaniesAsLeads } from '../api/leads'
+import { useState, useEffect, useCallback, useContext, useRef } from 'react'
+import {
+  getLeads, uploadLeads, draftLead, approveLead, unapproveLead, workflowSend,
+  pullLeads, updateLeadStatus, updateContactEmail, discoverCompaniesByIndustry,
+  getCompanyContacts, importCompaniesAsLeads,
+} from '../api/leads'
 import { getGmailStatus } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
+import { LeadProfileContext } from '../context/LeadProfileContext'
 import type { Lead, DiscoveredCompany, ExecutiveContact, ImportCompanyRequest } from '../api/types'
 import Button from '../components/ui/Button'
 
@@ -10,11 +15,12 @@ const STATUS_TABS = ['all', 'new', 'qualified', 'drafted', 'approved', 'sent']
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export default function LeadsPage() {
+  const { selectedLeadId, setSelectedLeadId } = useContext(LeadProfileContext)
+
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('all')
   const [expandedId, setExpandedId] = useState<number | null>(null)
-  const [reasonId, setReasonId] = useState<number | null>(null)
   const [gmailConnected, setGmailConnected] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [dryRun, setDryRun] = useState(demoMode)
@@ -24,6 +30,10 @@ export default function LeadsPage() {
   const [searchDomains, setSearchDomains] = useState('')
   const [searchLoading, setSearchLoading] = useState(false)
   const [updatingStatusId, setUpdatingStatusId] = useState<number | null>(null)
+  // Recipient selection modal for leads with multiple contacts
+  const [sendModalLeadId, setSendModalLeadId] = useState<number | null>(null)
+  const [sendRecipient, setSendRecipient] = useState('')
+  const [sendingRecipient, setSendingRecipient] = useState(false)
   // Company discovery state
   const [discoverOpen, setDiscoverOpen] = useState(false)
   const [discoverIndustry, setDiscoverIndustry] = useState('')
@@ -39,6 +49,8 @@ export default function LeadsPage() {
   const [companyContacts, setCompanyContacts] = useState<Record<string, ExecutiveContact[]>>({})
   const [loadingContacts, setLoadingContacts] = useState<string | null>(null)
   const [importingLeads, setImportingLeads] = useState(false)
+  // Tracks which contact emails the user explicitly revealed in the discover modal
+  const [revealedEmails, setRevealedEmails] = useState<Set<string>>(new Set())
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { addLog, startRun, logToRun, endRun } = useAgentLog()
   const { addToast } = useToast()
@@ -84,20 +96,6 @@ export default function LeadsPage() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  async function handleScore(id: number) {
-    const runId = startRun(`Score lead #${id}`)
-    try {
-      const result = await scoreLead(id)
-      endRun(runId, `${result.score}pts — ${result.reasons[0] || 'Scored'}`)
-      addToast(`Lead #${id} scored: ${result.score}pts`, 'success')
-      fetchLeads()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Score failed'
-      endRun(runId, msg, 'error')
-      addToast(`Score failed: ${msg}`, 'error')
-    }
-  }
-
   async function handleDraft(id: number) {
     const runId = startRun(`Draft lead #${id}`)
     try {
@@ -140,6 +138,32 @@ export default function LeadsPage() {
     }
   }
 
+  // Parse contacts from a lead's contacts_json field
+  function parseLeadContacts(lead: Lead): Array<{ name: string; email: string | null; title: string | null }> {
+    if (!lead.contacts_json) return []
+    try {
+      return JSON.parse(lead.contacts_json)
+    } catch {
+      return []
+    }
+  }
+
+  // Initiate send: show recipient modal if multiple contacts, else send directly
+  function initiateSend(lead: Lead) {
+    if (!gmailConnected) {
+      addToast('Gmail not connected. Go to Settings to connect.', 'error')
+      return
+    }
+    const contacts = parseLeadContacts(lead)
+    const emailContacts = contacts.filter((c) => c.email)
+    if (emailContacts.length > 1) {
+      setSendModalLeadId(lead.id)
+      setSendRecipient('')
+    } else {
+      handleWorkflow(lead.id)
+    }
+  }
+
   async function handleWorkflow(id: number) {
     const runId = startRun(`Send lead #${id}`)
     try {
@@ -156,6 +180,22 @@ export default function LeadsPage() {
       const msg = err instanceof Error ? err.message : 'Workflow failed'
       endRun(runId, msg, 'error')
       addToast(`Send failed: ${msg}`, 'error')
+    }
+  }
+
+  async function handleSendWithRecipient() {
+    if (!sendModalLeadId || !sendRecipient) return
+    setSendingRecipient(true)
+    try {
+      // Update contact_email to the selected recipient, then send
+      await updateContactEmail(sendModalLeadId, sendRecipient)
+      setSendModalLeadId(null)
+      setSendRecipient('')
+      await handleWorkflow(sendModalLeadId)
+    } catch {
+      addToast('Failed to update recipient', 'error')
+    } finally {
+      setSendingRecipient(false)
     }
   }
 
@@ -213,7 +253,6 @@ export default function LeadsPage() {
 
   async function handleSearch() {
     const domains = searchDomains.split(',').map((d) => d.trim()).filter(Boolean)
-    console.log('Search triggered with:', domains)
     if (domains.length === 0) {
       addToast('Please provide at least one domain', 'error')
       return
@@ -226,7 +265,6 @@ export default function LeadsPage() {
       setSearchDomains('')
       fetchLeads()
     } catch (err: unknown) {
-      console.error('[Search] Error:', err)
       const msg = err instanceof Error ? err.message : 'Search failed'
       addToast(`Search failed: ${msg}`, 'error')
     } finally {
@@ -246,6 +284,7 @@ export default function LeadsPage() {
     setDiscoverCached(false)
     setSelectedCompanies(new Set())
     setCompanyContacts({})
+    setRevealedEmails(new Set())
     try {
       const result = await discoverCompaniesByIndustry({
         industry: discoverIndustry.trim(),
@@ -292,6 +331,10 @@ export default function LeadsPage() {
     }
   }
 
+  function revealEmail(contactKey: string) {
+    setRevealedEmails((prev) => new Set([...prev, contactKey]))
+  }
+
   function toggleCompanySelect(key: string) {
     setSelectedCompanies((prev) => {
       const next = new Set(prev)
@@ -312,36 +355,31 @@ export default function LeadsPage() {
         const company = discoveredCompanies.find((c) => (c.domain || c.name) === key)
         if (!company) continue
         const contacts = companyContacts[company.domain || ''] || []
-        if (contacts.length > 0) {
-          // Import with first contact
-          const contact = contacts[0]
-          toImport.push({
-            name: company.name,
-            domain: company.domain,
-            description: company.description,
-            industry: discoverIndustry.trim() || 'Unknown',
-            size: null,
-            location: company.location,
-            contact_name: contact.name,
-            contact_role: contact.title,
-            contact_email: contact.email,
-            source: company.source,
-          })
-        } else {
-          // Import without contact
-          toImport.push({
-            name: company.name,
-            domain: company.domain,
-            description: company.description,
-            industry: discoverIndustry.trim() || 'Unknown',
-            size: null,
-            location: company.location,
-            contact_name: null,
-            contact_role: null,
-            contact_email: null,
-            source: company.source,
-          })
-        }
+        // Build full contacts list (stored in contacts_json, emails not hidden on backend)
+        const contactList = contacts.map((c) => ({
+          name: c.name,
+          title: c.title ?? null,
+          email: c.email ?? null,
+          linkedin_url: c.linkedin_url ?? null,
+          source: c.source,
+        }))
+        // Primary contact: first contact with an email
+        const primary = contactList.find((c) => c.email) ?? contactList[0] ?? null
+        toImport.push({
+          name: company.name,
+          domain: company.domain,
+          description: company.description,
+          industry: discoverIndustry.trim() || 'Unknown',
+          size: null,
+          location: company.location,
+          phone: company.phone,
+          website_url: company.website_url,
+          contact_name: primary?.name ?? null,
+          contact_role: primary?.title ?? null,
+          contact_email: primary?.email ?? null,
+          contacts: contactList.length > 0 ? contactList : null,
+          source: company.source,
+        })
       }
       const result = await importCompaniesAsLeads(toImport)
       addToast(`Imported ${result.imported} leads, ${result.skipped} skipped`, 'success')
@@ -349,6 +387,7 @@ export default function LeadsPage() {
       setDiscoveredCompanies([])
       setSelectedCompanies(new Set())
       setCompanyContacts({})
+      setRevealedEmails(new Set())
       fetchLeads()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Import failed'
@@ -374,12 +413,6 @@ export default function LeadsPage() {
     }
   }
 
-  async function batchScore() {
-    await runBatch('Score', async (lead) => {
-      try { await scoreLead(lead.id); return null } catch { return 'failed' }
-    }, 'new')
-  }
-
   async function batchDraft() {
     await runBatch('Draft', async (lead) => {
       try { await draftLead(lead.id); return null } catch { return 'failed' }
@@ -401,6 +434,12 @@ export default function LeadsPage() {
       } catch { return 'failed' }
     }, 'approved')
   }
+
+  // Leads in the send recipient modal
+  const sendModalLead = sendModalLeadId ? leads.find((l) => l.id === sendModalLeadId) : null
+  const sendModalContacts = sendModalLead
+    ? parseLeadContacts(sendModalLead).filter((c) => c.email)
+    : []
 
   return (
     <div>
@@ -447,9 +486,6 @@ export default function LeadsPage() {
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-2 mb-3 p-2 bg-soft-navy/70 rounded-lg border border-warm-gray/20">
           <span className="text-xs text-warm-gray mr-1">{selectedIds.size} selected</span>
-          <Button size="sm" variant="secondary" onClick={batchScore} disabled={batchRunning}>
-            Score
-          </Button>
           <Button size="sm" variant="secondary" onClick={batchDraft} disabled={batchRunning}>
             Draft
           </Button>
@@ -493,6 +529,14 @@ export default function LeadsPage() {
         </div>
       )}
 
+      {/* Gmail not connected banner */}
+      {!gmailConnected && (
+        <div className="mb-3 px-3 py-2 bg-warm-gray/10 border border-warm-gray/20 rounded-lg flex items-center justify-between">
+          <span className="text-xs text-warm-gray">Gmail not connected — sending is disabled.</span>
+          <a href="/settings" className="text-xs text-terracotta hover:underline">Connect in Settings →</a>
+        </div>
+      )}
+
       {loading ? (
         <p className="text-warm-gray text-sm">Loading...</p>
       ) : filtered.length === 0 ? (
@@ -509,132 +553,153 @@ export default function LeadsPage() {
             />
             Select all
           </label>
-          {filtered.map((lead) => (
-            <div
-              key={lead.id}
-              className="bg-soft-navy/50 rounded-lg p-3 border border-warm-gray/10"
-            >
-              <div className="flex items-center justify-between">
-                <div className="flex items-center gap-3">
-                  <input
-                    type="checkbox"
-                    checked={selectedIds.has(lead.id)}
-                    onChange={() => toggleSelect(lead.id)}
-                    className="accent-terracotta"
-                  />
-                  <span className="text-sm font-medium">{lead.company}</span>
-                  <span className="text-xs text-warm-gray">{lead.industry}</span>
-                  <select
-                    value={lead.status}
-                    onChange={(e) => handleStatusChange(lead.id, e.target.value)}
-                    disabled={updatingStatusId === lead.id}
-                    className="bg-soft-navy border border-warm-gray/30 rounded px-2 py-0.5 text-xs text-warm-cream cursor-pointer disabled:opacity-50"
-                  >
-                    <option value="new">New</option>
-                    <option value="in_progress">In Progress</option>
-                    <option value="contacted">Contacted</option>
-                    <option value="qualified">Qualified</option>
-                    <option value="drafted">Drafted</option>
-                    <option value="approved">Approved</option>
-                    <option value="sent">Sent</option>
-                    <option value="ignored">Ignored</option>
-                  </select>
-                  {lead.score > 0 && (
-                    <button
-                      onClick={() => setReasonId(reasonId === lead.id ? null : lead.id)}
-                      className="text-xs text-terracotta font-medium hover:underline"
+          {filtered.map((lead) => {
+            const isProfileSelected = selectedLeadId === lead.id
+            return (
+              <div
+                key={lead.id}
+                className={`rounded-lg p-3 border transition-colors cursor-pointer ${
+                  isProfileSelected
+                    ? 'bg-terracotta/10 border-terracotta/40'
+                    : 'bg-soft-navy/50 border-warm-gray/10 hover:border-warm-gray/30'
+                }`}
+                onClick={() => setSelectedLeadId(isProfileSelected ? null : lead.id)}
+              >
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.has(lead.id)}
+                      onChange={() => toggleSelect(lead.id)}
+                      className="accent-terracotta"
+                    />
+                    <span className="text-sm font-medium">{lead.company}</span>
+                    <span className="text-xs text-warm-gray">{lead.industry}</span>
+                    <select
+                      value={lead.status}
+                      onChange={(e) => handleStatusChange(lead.id, e.target.value)}
+                      disabled={updatingStatusId === lead.id}
+                      className="bg-soft-navy border border-warm-gray/30 rounded px-2 py-0.5 text-xs text-warm-cream cursor-pointer disabled:opacity-50"
                     >
-                      {lead.score}pts {reasonId === lead.id ? '▾' : '▸'}
+                      <option value="new">New</option>
+                      <option value="in_progress">In Progress</option>
+                      <option value="contacted">Contacted</option>
+                      <option value="qualified">Qualified</option>
+                      <option value="drafted">Drafted</option>
+                      <option value="approved">Approved</option>
+                      <option value="sent">Sent</option>
+                      <option value="ignored">Ignored</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                    {lead.status === 'qualified' && (
+                      <Button size="sm" variant="secondary" onClick={() => handleDraft(lead.id)}>
+                        Draft
+                      </Button>
+                    )}
+                    {lead.status === 'drafted' && (
+                      <Button size="sm" onClick={() => handleApprove(lead.id)}>
+                        Approve
+                      </Button>
+                    )}
+                    {lead.status === 'approved' && (
+                      <>
+                        <Button size="sm" variant="secondary" onClick={() => handleUnapprove(lead.id)}>
+                          Unapprove
+                        </Button>
+                        <Button
+                          size="sm"
+                          onClick={() => initiateSend(lead)}
+                          disabled={!lead.contact_email || !gmailConnected || demoMode}
+                        >
+                          Send
+                        </Button>
+                      </>
+                    )}
+                    <button
+                      onClick={() => setExpandedId(expandedId === lead.id ? null : lead.id)}
+                      className="text-warm-gray hover:text-warm-cream text-xs ml-2"
+                    >
+                      {expandedId === lead.id ? 'Hide' : 'Details'}
                     </button>
-                  )}
+                  </div>
                 </div>
-                <div className="flex items-center gap-1.5">
-                  {lead.status === 'new' && (
-                    <Button size="sm" variant="secondary" onClick={() => handleScore(lead.id)}>
-                      Score
-                    </Button>
-                  )}
-                  {lead.status === 'qualified' && (
-                    <Button size="sm" variant="secondary" onClick={() => handleDraft(lead.id)}>
-                      Draft
-                    </Button>
-                  )}
-                  {lead.status === 'drafted' && (
-                    <Button size="sm" onClick={() => handleApprove(lead.id)}>
-                      Approve
-                    </Button>
-                  )}
-                  {lead.status === 'approved' && (
-                    <>
-                      <Button size="sm" variant="secondary" onClick={() => handleUnapprove(lead.id)}>
-                        Unapprove
-                      </Button>
-                      <Button
-                        size="sm"
-                        onClick={() => handleWorkflow(lead.id)}
-                        disabled={!lead.contact_email || !gmailConnected || demoMode}
-                      >
-                        Send
-                      </Button>
-                    </>
-                  )}
-                  <button
-                    onClick={() => setExpandedId(expandedId === lead.id ? null : lead.id)}
-                    className="text-warm-gray hover:text-warm-cream text-xs ml-2"
+
+                {lead.status === 'approved' && (!lead.contact_email || !gmailConnected || demoMode) && (
+                  <p className="text-xs text-warm-gray mt-1 text-right">
+                    {!lead.contact_email
+                      ? 'No contact email'
+                      : demoMode
+                      ? 'Demo mode — use dry run'
+                      : 'Gmail not connected — go to Settings'}
+                  </p>
+                )}
+
+                {expandedId === lead.id && (
+                  <div
+                    className="mt-3 pt-3 border-t border-warm-gray/10 text-xs space-y-1"
+                    onClick={(e) => e.stopPropagation()}
                   >
-                    {expandedId === lead.id ? 'Hide' : 'Details'}
-                  </button>
-                </div>
+                    {lead.contact_email && <p><span className="text-warm-gray">Email:</span> {lead.contact_email}</p>}
+                    {lead.phone && <p><span className="text-warm-gray">Phone:</span> {lead.phone}</p>}
+                    {lead.location && <p><span className="text-warm-gray">Location:</span> {lead.location}</p>}
+                    {lead.employees && <p><span className="text-warm-gray">Employees:</span> {lead.employees}</p>}
+                    {lead.stage && <p><span className="text-warm-gray">Stage:</span> {lead.stage}</p>}
+                    {lead.email_subject && (
+                      <div className="mt-2 bg-warm-cream/10 rounded p-2">
+                        <p className="font-medium">{lead.email_subject}</p>
+                        <p className="text-warm-gray mt-1 whitespace-pre-wrap">{lead.email_body}</p>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
+            )
+          })}
+        </div>
+      )}
 
-              {lead.status === 'approved' && (!lead.contact_email || !gmailConnected || demoMode) && (
-                <p className="text-xs text-warm-gray mt-1 text-right">
-                  {!lead.contact_email ? 'No contact email' : demoMode ? 'Demo mode — use dry run' : 'Gmail not connected'}
-                </p>
-              )}
-
-              {reasonId === lead.id && lead.score > 0 && (
-                <div className="mt-2 pt-2 border-t border-warm-gray/10 text-xs space-y-1.5">
-                  <p className="font-medium text-terracotta">Why ADINA chose this lead</p>
-                  <p className="text-warm-gray">Score: <span className="text-warm-cream font-medium">{lead.score}pts</span></p>
-                  {lead.score_reason && (
-                    <ul className="list-disc list-inside space-y-0.5 text-warm-gray">
-                      {lead.score_reason.split('\n').filter(Boolean).map((r, i) => (
-                        <li key={i}>{r}</li>
-                      ))}
-                    </ul>
-                  )}
-                  {(lead.source_url || lead.website) && (
-                    <p>
-                      <a
-                        href={lead.source_url || lead.website || '#'}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="text-terracotta hover:underline"
-                      >
-                        {lead.source_url?.includes('linkedin') ? 'LinkedIn Profile' : 'Website'} ↗
-                      </a>
-                    </p>
-                  )}
-                </div>
-              )}
-
-              {expandedId === lead.id && (
-                <div className="mt-3 pt-3 border-t border-warm-gray/10 text-xs space-y-1">
-                  {lead.contact_email && <p><span className="text-warm-gray">Email:</span> {lead.contact_email}</p>}
-                  {lead.location && <p><span className="text-warm-gray">Location:</span> {lead.location}</p>}
-                  {lead.employees && <p><span className="text-warm-gray">Employees:</span> {lead.employees}</p>}
-                  {lead.stage && <p><span className="text-warm-gray">Stage:</span> {lead.stage}</p>}
-                  {lead.email_subject && (
-                    <div className="mt-2 bg-warm-cream/10 rounded p-2">
-                      <p className="font-medium">{lead.email_subject}</p>
-                      <p className="text-warm-gray mt-1 whitespace-pre-wrap">{lead.email_body}</p>
-                    </div>
-                  )}
-                </div>
-              )}
+      {/* Recipient Selection Modal */}
+      {sendModalLeadId && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
+          <div className="bg-soft-navy rounded-lg border border-warm-gray/20 p-6 w-full max-w-sm shadow-xl">
+            <h2 className="text-lg font-semibold text-warm-cream mb-1">Select Recipient</h2>
+            <p className="text-xs text-warm-gray mb-4">
+              {sendModalLead?.company} has multiple contacts. Choose who to send to.
+            </p>
+            <div>
+              <label className="block text-xs text-warm-gray mb-1">Recipient *</label>
+              <select
+                value={sendRecipient}
+                onChange={(e) => setSendRecipient(e.target.value)}
+                className="w-full bg-soft-navy border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream"
+              >
+                <option value="">Select a contact...</option>
+                {sendModalContacts.map((c, i) => (
+                  <option key={i} value={c.email!}>
+                    {c.name}{c.title ? ` (${c.title})` : ''} — {c.email}
+                  </option>
+                ))}
+              </select>
             </div>
-          ))}
+            <div className="flex justify-end gap-2 mt-5">
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={() => { setSendModalLeadId(null); setSendRecipient('') }}
+                disabled={sendingRecipient}
+              >
+                Cancel
+              </Button>
+              <Button
+                size="sm"
+                onClick={handleSendWithRecipient}
+                disabled={!sendRecipient || sendingRecipient}
+              >
+                {sendingRecipient ? 'Sending...' : 'Send'}
+              </Button>
+            </div>
+          </div>
         </div>
       )}
 
@@ -855,19 +920,41 @@ export default function LeadsPage() {
                               onClick={() => handleGetContacts(company.domain || '', company.source)}
                               disabled={!canGetContacts || loadingContacts === company.domain}
                             >
-                              {loadingContacts === company.domain ? 'Loading...' : contacts.length > 0 ? `${contacts.length} Contacts` : 'Get Contacts'}
+                              {loadingContacts === company.domain
+                                ? 'Loading...'
+                                : contacts.length > 0
+                                ? `${contacts.length} Contacts`
+                                : 'Get Contacts'}
                             </Button>
                           </div>
                         </div>
+                        {/* Contacts list: emails hidden until explicitly revealed */}
                         {contacts.length > 0 && (
                           <div className="px-3 pb-2 pt-0 border-t border-warm-gray/10 space-y-1">
-                            {contacts.slice(0, 5).map((contact, idx) => (
-                              <div key={idx} className="flex items-center gap-2 text-xs">
-                                <span className="text-warm-cream">{contact.name}</span>
-                                {contact.title && <span className="text-warm-gray">- {contact.title}</span>}
-                                {contact.email && <span className="text-terracotta">{contact.email}</span>}
-                              </div>
-                            ))}
+                            {contacts.slice(0, 5).map((contact, idx) => {
+                              const emailKey = `${company.domain}-${idx}`
+                              const emailRevealed = revealedEmails.has(emailKey)
+                              return (
+                                <div key={idx} className="flex items-center gap-2 text-xs">
+                                  <span className="text-warm-cream">{contact.name}</span>
+                                  {contact.title && (
+                                    <span className="text-warm-gray">- {contact.title}</span>
+                                  )}
+                                  {contact.email && (
+                                    emailRevealed ? (
+                                      <span className="text-terracotta">{contact.email}</span>
+                                    ) : (
+                                      <button
+                                        onClick={() => revealEmail(emailKey)}
+                                        className="text-warm-gray/60 hover:text-terracotta text-[10px] border border-warm-gray/20 rounded px-1.5 py-0.5 transition-colors"
+                                      >
+                                        Reveal email
+                                      </button>
+                                    )
+                                  )}
+                                </div>
+                              )
+                            })}
                             {contacts.length > 5 && (
                               <p className="text-xs text-warm-gray">+{contacts.length - 5} more</p>
                             )}

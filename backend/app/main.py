@@ -90,6 +90,9 @@ from app.schemas import (
     ExecutiveContact,
     ImportCompaniesRequest,
     ImportCompaniesResponse,
+    # Profile schemas
+    LeadProfile,
+    ProfileContact,
 )
 from app.agent.outbound import draft_outreach_email
 from app.agent.scoring import score_lead
@@ -154,10 +157,29 @@ if gmail is None:
         "Gmail disabled: google libraries not installed"
     )
 
+def run_db_migrations(engine) -> None:
+    """Add new columns to existing tables if they don't exist (safe to run repeatedly)."""
+    migrations = [
+        "ALTER TABLE leads ADD COLUMN phone VARCHAR",
+        "ALTER TABLE leads ADD COLUMN linkedin_url VARCHAR",
+        "ALTER TABLE leads ADD COLUMN contacts_json TEXT",
+    ]
+    with engine.connect() as conn:
+        for stmt in migrations:
+            try:
+                conn.execute(text(stmt))
+                conn.commit()
+                logger.info("Migration applied: %s", stmt)
+            except Exception:
+                # Column already exists — safe to ignore
+                conn.rollback()
+
+
 # Create database tables (with error handling for production)
 try:
     Base.metadata.create_all(bind=engine)
     logger.info("Database tables created successfully")
+    run_db_migrations(engine)
 except Exception as e:
     logger.error("Failed to create database tables: %s", e)
     # In production, we might want to exit or handle this differently
@@ -177,10 +199,11 @@ async def startup_event():
     logger.info("DEMO_MODE = %s", settings.demo_mode)
     logger.info("DATABASE_URL = %s", settings.database_url.replace(settings.database_url.split('@')[0].split('//')[1].split(':')[0], '***') if '@' in settings.database_url else settings.database_url)
     
-    # Try to create database tables
+    # Try to create database tables and run migrations
     try:
         Base.metadata.create_all(bind=engine)
         logger.info("Database tables created successfully")
+        run_db_migrations(engine)
     except Exception as e:
         logger.error("Failed to create database tables: %s", e)
         logger.warning("Application will continue, but database operations may fail")
@@ -1044,17 +1067,49 @@ def import_companies_as_leads(
         if company.size:
             employees = parse_employees(company.size)
 
+        # Build contacts_json from full contacts list (preserves all contacts, not just first)
+        contacts_to_store = []
+        if company.contacts:
+            for c in company.contacts:
+                contacts_to_store.append({
+                    "name": c.get("name", "Unknown"),
+                    "title": c.get("title"),
+                    "email": c.get("email"),
+                    "linkedin_url": c.get("linkedin_url"),
+                    "source": c.get("source", company.source),
+                })
+        elif company.contact_name or company.contact_email:
+            contacts_to_store.append({
+                "name": company.contact_name or "Unknown",
+                "title": company.contact_role,
+                "email": company.contact_email,
+                "linkedin_url": None,
+                "source": company.source,
+            })
+
+        # Primary contact from first in contacts list
+        primary_name = company.contact_name
+        primary_role = company.contact_role
+        primary_email = company.contact_email
+        if contacts_to_store and not primary_email:
+            first = contacts_to_store[0]
+            primary_name = primary_name or first.get("name")
+            primary_role = primary_role or first.get("title")
+            primary_email = primary_email or first.get("email")
+
         # Create lead
         lead = Lead(
             company=company.name,
             industry=company.industry,
             location=company.location,
             employees=employees,
-            website=company.domain,
+            website=company.website_url or company.domain,
             notes=company.description,
-            contact_name=company.contact_name,
-            contact_role=company.contact_role,
-            contact_email=company.contact_email,
+            contact_name=primary_name,
+            contact_role=primary_role,
+            contact_email=primary_email,
+            phone=company.phone,
+            contacts_json=json.dumps(contacts_to_store) if contacts_to_store else None,
             source=company.source,
             status="new",
         )
@@ -1104,6 +1159,59 @@ def get_lead(lead_id: int, db: Session = Depends(get_db)):
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
     return lead
+
+
+@app.get("/api/leads/{lead_id}/profile", response_model=LeadProfile)
+def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
+    """
+    Get a lead's company profile, including all stored contacts.
+
+    Returns: name, website, phone, location, description, linkedin_url, contacts[]
+    """
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    # Parse contacts from JSON
+    contacts: list = []
+    if lead.contacts_json:
+        try:
+            raw = json.loads(lead.contacts_json)
+            for c in raw:
+                contacts.append(ProfileContact(
+                    name=c.get("name", "Unknown"),
+                    title=c.get("title"),
+                    email=c.get("email"),
+                    linkedin_url=c.get("linkedin_url"),
+                    source=c.get("source"),
+                ))
+        except (TypeError, ValueError):
+            pass
+    # Fallback: include single contact_email/contact_name if no contacts_json
+    if not contacts and (lead.contact_name or lead.contact_email):
+        contacts.append(ProfileContact(
+            name=lead.contact_name or "Unknown",
+            title=lead.contact_role,
+            email=lead.contact_email,
+            linkedin_url=None,
+            source=lead.source,
+        ))
+
+    return LeadProfile(
+        id=lead.id,
+        company=lead.company,
+        website=lead.website,
+        phone=lead.phone,
+        location=lead.location,
+        description=lead.notes,
+        linkedin_url=lead.linkedin_url,
+        contacts=contacts,
+        status=lead.status,
+        source=lead.source,
+        industry=lead.industry,
+        contact_name=lead.contact_name,
+        contact_email=lead.contact_email,
+    )
 
 
 @app.patch("/api/leads/{lead_id}/contact_email", response_model=ContactEmailResponse)

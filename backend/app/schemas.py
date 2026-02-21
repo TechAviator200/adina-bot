@@ -1,6 +1,6 @@
 from pydantic import BaseModel
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Dict, List, Optional
 
 
 class HealthResponse(BaseModel):
@@ -53,6 +53,9 @@ class LeadRead(BaseModel):
     source: Optional[str] = None
     source_url: Optional[str] = None
     created_at: datetime
+    phone: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    contacts_json: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -261,6 +264,30 @@ class CompanyContactsResponse(BaseModel):
     message: Optional[str] = None
 
 
+class ProfileContact(BaseModel):
+    name: str
+    title: Optional[str] = None
+    email: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    source: Optional[str] = None
+
+
+class LeadProfile(BaseModel):
+    id: int
+    company: str
+    website: Optional[str] = None
+    phone: Optional[str] = None
+    location: Optional[str] = None
+    description: Optional[str] = None
+    linkedin_url: Optional[str] = None
+    contacts: List[ProfileContact] = []
+    status: str
+    source: Optional[str] = None
+    industry: str
+    contact_name: Optional[str] = None
+    contact_email: Optional[str] = None
+
+
 class ImportCompanyRequest(BaseModel):
     name: str
     domain: Optional[str] = None
@@ -268,9 +295,12 @@ class ImportCompanyRequest(BaseModel):
     industry: str
     size: Optional[str] = None
     location: Optional[str] = None
+    phone: Optional[str] = None
+    website_url: Optional[str] = None
     contact_name: Optional[str] = None
     contact_role: Optional[str] = None
     contact_email: Optional[str] = None
+    contacts: Optional[List[dict]] = None  # Full contacts list [{name,title,email,...}]
     source: str = "hunter"
 
 
