@@ -53,6 +53,41 @@ class DailyEmailCount(Base):
     count = Column(Integer, default=0)
 
 
+class PlacesCache(Base):
+    """Google Places Details cache (30-day TTL by default)."""
+    __tablename__ = "places_cache"
+    id = Column(Integer, primary_key=True, index=True)
+    place_id = Column(String, unique=True, index=True, nullable=False)
+    response_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), index=True, nullable=False)
+
+
+class HunterCache(Base):
+    """Hunter.io domain search cache (14-day default TTL)."""
+    __tablename__ = "hunter_cache"
+    id = Column(Integer, primary_key=True, index=True)
+    domain = Column(String, unique=True, index=True, nullable=False)
+    response_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    expires_at = Column(DateTime(timezone=True), index=True, nullable=False)
+
+
+class GmailToken(Base):
+    """Encrypted Gmail OAuth tokens, keyed by user_key for multi-user support."""
+    __tablename__ = "gmail_tokens"
+    id = Column(Integer, primary_key=True, index=True)
+    user_key = Column(String, unique=True, index=True, nullable=False)
+    provider = Column(String, default="google")
+    access_token_encrypted = Column(Text, nullable=False)
+    refresh_token_encrypted = Column(Text, nullable=True)
+    scope = Column(String, nullable=True)
+    token_expiry = Column(DateTime(timezone=True), nullable=True)
+    email_address = Column(String, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)
+
+
 class CompanyDiscoveryCache(Base):
     __tablename__ = "company_discovery_cache"
 

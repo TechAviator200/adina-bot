@@ -34,6 +34,21 @@ class Settings(BaseSettings):
     serpapi_cache_ttl_days: int = 7
     disable_api_key_auth: bool = False  # Set DISABLE_API_KEY_AUTH=true for local dev only
 
+    # Cost controls
+    low_cost_mode: bool = True  # Caps discover at 20, no auto enrichment
+    cache_ttl_serpapi_hours: int = 24
+    cache_ttl_places_days: int = 30
+    cache_ttl_hunter_days: int = 14
+
+    # Google Places API (for company detail enrichment on click)
+    google_places_api_key: Optional[str] = None
+
+    # Gmail OAuth (DB-backed, per-user)
+    google_client_id: Optional[str] = None
+    google_client_secret: Optional[str] = None
+    google_redirect_uri: Optional[str] = None  # e.g. https://your-backend/api/gmail/auth/callback
+    gmail_oauth_encryption_key: Optional[str] = None  # Fernet key (32-byte url-safe base64)
+
     @property
     def resolved_credentials_dir(self) -> Path:
         """Resolve credentials directory with fallback for Render free tier.

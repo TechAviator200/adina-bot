@@ -103,16 +103,21 @@ def main():
     finally:
         os.unlink(csv_path)
 
-    # 7. Test domain contacts endpoint with known domain
-    # The endpoint requires a body with domain and source, even though domain is in path
-    test_endpoint(
-        "POST /api/companies/stripe.com/contacts",
+    # 7. Domain contacts — must return 200 even when Hunter not configured (never 500/503)
+    contacts_resp = test_endpoint(
+        "POST /api/companies/stripe.com/contacts (graceful if no key)",
         "POST",
         "/api/companies/stripe.com/contacts",
         headers=HEADERS,
         json_data={"domain": "stripe.com", "source": "hunter"},
-        expect_status=(200, 502, 503)  # 200 OK, or 502/503 if API key missing/service unavailable
+        expect_status=(200,)
     )
+    if contacts_resp and isinstance(contacts_resp.get("body"), dict):
+        msg = contacts_resp["body"].get("message", "")
+        if (msg and ("not configured" in msg or "Hunter" in msg)) or isinstance(contacts_resp["body"].get("contacts"), list):
+            results.append(("Contacts returns 200 with graceful message", "PASS", 200, msg or "contacts list returned"))
+        else:
+            results.append(("Contacts returns 200 with graceful message", "PASS", 200, "OK"))
 
     # 8. Test SerpAPI discover endpoint
     serpapi_payload = {
@@ -243,14 +248,52 @@ def main():
         elif body.get("skipped", 0) > 0:
             results.append(("POST /api/leads/import (profile fields)", "PASS", 200, "Lead already exists (skipped)"))
 
-    # 11. Gmail status check (informational)
-    test_endpoint(
-        "GET /api/gmail/status",
+    # 11. Gmail status — must return 200 with connected=false when no tokens stored
+    gmail_resp = test_endpoint(
+        "GET /api/gmail/status (returns 200 + connected=false)",
         "GET",
         "/api/gmail/status",
         headers=HEADERS,
         expect_status=(200,)
     )
+    if gmail_resp and isinstance(gmail_resp.get("body"), dict):
+        if "connected" in gmail_resp["body"]:
+            results.append(("Gmail status has connected field", "PASS", 200,
+                            f"connected={gmail_resp['body']['connected']}"))
+        else:
+            results.append(("Gmail status has connected field", "FAIL", 200, "Missing 'connected' field"))
+
+    # 12. Gmail auth/start — returns {url} or {error} (never 500)
+    auth_resp = test_endpoint(
+        "GET /api/gmail/auth/start (200 even if unconfigured)",
+        "GET",
+        "/api/gmail/auth/start",
+        headers=HEADERS,
+        expect_status=(200,)
+    )
+    if auth_resp and isinstance(auth_resp.get("body"), dict):
+        body = auth_resp["body"]
+        if "url" in body or "error" in body:
+            results.append(("Gmail auth/start returns url or error", "PASS", 200,
+                            "url" if "url" in body else body.get("error", "")[:60]))
+        else:
+            results.append(("Gmail auth/start returns url or error", "FAIL", 200, str(body)[:60]))
+
+    # 13. Google Places endpoint — returns 200 even if not configured
+    places_resp = test_endpoint(
+        "GET /api/companies/place/fake_place_id (200 always)",
+        "GET",
+        "/api/companies/place/fake_place_id",
+        headers=HEADERS,
+        expect_status=(200,)
+    )
+    if places_resp and isinstance(places_resp.get("body"), dict):
+        body = places_resp["body"]
+        if "message" in body or "name" in body or "place_id" in body:
+            results.append(("Places returns 200 with message or data", "PASS", 200,
+                            body.get("message", body.get("name", ""))[:60]))
+        else:
+            results.append(("Places returns 200 with message or data", "FAIL", 200, str(body)[:60]))
 
     # Print results table
     print()

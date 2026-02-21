@@ -50,7 +50,7 @@ from sqlalchemy import func as sql_func, text
 
 from app.settings import settings
 from app.db import Base, engine, get_db
-from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache
+from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache, PlacesCache, HunterCache, GmailToken
 from app.schemas import (
     HealthResponse,
     ReadinessCheck,
@@ -105,6 +105,12 @@ try:
 except ImportError:
     gmail = None  # type: ignore
 
+# DB-backed Gmail service (per-user, encrypted tokens — preferred over file-based)
+try:
+    from app import gmail_service
+except ImportError:
+    gmail_service = None  # type: ignore
+
 # Google CSE is optional - app must not crash if google libs are missing
 try:
     from services.google_cse_service import GoogleCSEService
@@ -158,6 +164,46 @@ if gmail is None:
     logger.warning(
         "Gmail disabled: google libraries not installed"
     )
+
+
+# ---------------------------------------------------------------------------
+# Per-user helpers
+# ---------------------------------------------------------------------------
+
+def get_user_key(request: Request) -> str:
+    """Extract user identity from x-user-key header; default 'local_user'."""
+    return request.headers.get("x-user-key", "local_user")
+
+
+def _gmail_status_for_user(db, user_key: str) -> dict:
+    """Return {connected, email} — DB service first, fall back to file-based."""
+    if gmail_service is not None:
+        st = gmail_service.get_status(db, user_key)
+        if st["connected"]:
+            return st
+    if gmail is not None:
+        return gmail.get_connection_status()
+    return {"connected": False, "email": None}
+
+
+def _is_gmail_connected(db, user_key: str) -> bool:
+    return _gmail_status_for_user(db, user_key)["connected"]
+
+
+def _send_email_for_user(db, user_key: str, to: str, subject: str, body: str) -> dict:
+    """Send via DB-backed service if connected, fall back to file-based."""
+    if gmail_service is not None:
+        st = gmail_service.get_status(db, user_key)
+        if st["connected"]:
+            try:
+                return gmail_service.send_email(db, user_key, to, subject, body)
+            except Exception as exc:
+                logger.error("DB gmail send failed for user %s: %s", user_key, exc)
+                return {"success": False, "error": str(exc)}
+    if gmail is not None and gmail.is_connected():
+        return gmail.send_email(to=to, subject=subject, body=body)
+    return {"success": False, "error": "Gmail not connected. Connect in Settings first."}
+
 
 def run_db_migrations(engine) -> None:
     """Add new columns to existing tables if they don't exist (safe to run repeatedly)."""
@@ -903,8 +949,9 @@ def discover_companies(request: CompanyDiscoverRequest, db: Session = Depends(ge
     if SerpAPIService is None:
         return CompanyDiscoverResponse(companies=[], cached=False, message="SerpAPI service not available")
 
-    requested_limit = request.limit or 30
-    limit = max(1, min(int(requested_limit), 50))
+    requested_limit = request.limit or 20
+    max_allowed = 20 if settings.low_cost_mode else 50
+    limit = max(1, min(int(requested_limit), max_allowed))
     source = request.source or "google_maps"
     query_text = " ".join(
         p for p in [request.industry, request.city, request.country] if p
@@ -947,7 +994,8 @@ def discover_companies(request: CompanyDiscoverRequest, db: Session = Depends(ge
         message = "SerpAPI returned no results"
         return CompanyDiscoverResponse(companies=[], cached=False, message=message)
 
-    ttl_days = max(1, int(settings.serpapi_cache_ttl_days or 7))
+    ttl_hours = max(1, settings.cache_ttl_serpapi_hours)
+    ttl_days = max(1, ttl_hours // 24)
     set_cache_results(
         db=db,
         query_hash=query_hash,
@@ -965,14 +1013,76 @@ def discover_companies(request: CompanyDiscoverRequest, db: Session = Depends(ge
     return CompanyDiscoverResponse(companies=companies, cached=False, message=None)
 
 
+@app.get("/api/companies/place/{place_id}")
+def get_place_details(place_id: str, db: Session = Depends(get_db)):
+    """
+    Fetch Google Places details for a place_id.
+
+    Cached for CACHE_TTL_PLACES_DAYS (default 30 days).
+    Only called on user action (click / import) — never automatically.
+    Returns 200 with message if Google Places API key is not configured.
+    """
+    if not settings.google_places_api_key:
+        return {"place_id": place_id, "message": "Google Places not configured", "cached": False}
+
+    now = datetime.utcnow()
+    # Cache hit check
+    cached = db.query(PlacesCache).filter(PlacesCache.place_id == place_id).first()
+    if cached and cached.expires_at > now:
+        try:
+            return {**json.loads(cached.response_json), "cached": True}
+        except Exception:
+            pass  # Fall through to live call
+
+    try:
+        import requests as _requests
+        url = "https://maps.googleapis.com/maps/api/place/details/json"
+        params = {
+            "place_id": place_id,
+            "fields": "name,formatted_address,formatted_phone_number,website,rating,types,opening_hours",
+            "key": settings.google_places_api_key,
+        }
+        resp = _requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        result = data.get("result", {})
+        payload = {
+            "place_id": place_id,
+            "name": result.get("name"),
+            "address": result.get("formatted_address"),
+            "phone": result.get("formatted_phone_number"),
+            "website": result.get("website"),
+            "rating": result.get("rating"),
+            "categories": result.get("types", []),
+            "hours": result.get("opening_hours", {}).get("weekday_text", []),
+        }
+    except Exception as exc:
+        logger.error("Google Places fetch error for %s: %s", place_id, exc)
+        return {"place_id": place_id, "message": f"Places API error: {exc}", "cached": False}
+
+    # Upsert cache
+    ttl_days = max(1, settings.cache_ttl_places_days)
+    expires = now + timedelta(days=ttl_days)
+    if cached:
+        cached.response_json = json.dumps(payload)
+        cached.expires_at = expires
+    else:
+        db.add(PlacesCache(place_id=place_id, response_json=json.dumps(payload), expires_at=expires))
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+    return {**payload, "cached": False}
+
+
 @app.post("/api/companies/{domain}/contacts", response_model=CompanyContactsResponse)
-def get_company_contacts(domain: str, request: CompanyContactsRequest = None):
+def get_company_contacts(domain: str, request: CompanyContactsRequest = None, db: Session = Depends(get_db)):
     """
     Get executive contacts for a company by domain.
 
-    This USES CREDITS - each call consumes credits from your Hunter/Snov.io quota.
-
-    Returns email addresses, titles, and LinkedIn URLs for contacts at the company.
+    Cached for CACHE_TTL_HUNTER_DAYS (default 14 days).
+    Returns 200 with message (never 500) when provider not configured.
     """
     source = request.source if request else "hunter"
     if source in ("google", "google_maps"):
@@ -981,28 +1091,45 @@ def get_company_contacts(domain: str, request: CompanyContactsRequest = None):
         elif SnovService is not None and settings.snov_client_id and settings.snov_client_secret:
             source = "snov"
         else:
-            raise HTTPException(
-                status_code=503,
-                detail="No contact provider configured for Google-discovered companies",
+            return CompanyContactsResponse(
+                domain=domain,
+                company_name=None,
+                contacts=[],
+                message="No contact provider configured",
             )
+
     contacts: List[ExecutiveContact] = []
     company_name = None
     messages = []
+    now = datetime.utcnow()
 
     if source == "hunter":
-        if HunterService is None:
-            raise HTTPException(status_code=503, detail="Hunter.io service not available")
-        if not settings.hunter_api_key:
-            raise HTTPException(status_code=503, detail="Hunter.io API key not configured")
+        if HunterService is None or not settings.hunter_api_key:
+            return CompanyContactsResponse(
+                domain=domain, company_name=None, contacts=[],
+                message="Hunter not configured",
+            )
+
+        # Cache check
+        cached = db.query(HunterCache).filter(HunterCache.domain == domain).first()
+        if cached and cached.expires_at > now:
+            try:
+                cached_data = json.loads(cached.response_json)
+                contacts = [ExecutiveContact(**c) for c in cached_data.get("contacts", [])]
+                return CompanyContactsResponse(
+                    domain=domain,
+                    company_name=cached_data.get("company_name"),
+                    contacts=contacts,
+                    message="cached",
+                )
+            except Exception:
+                pass  # Fall through to live call
 
         try:
             hunter = HunterService()
-            # Get company info
             company_info = hunter.get_company_info(domain)
             if company_info:
                 company_name = company_info.get("name")
-
-            # Get contacts
             results = hunter.domain_search(domain)
             for person in results:
                 contacts.append(ExecutiveContact(
@@ -1014,22 +1141,39 @@ def get_company_contacts(domain: str, request: CompanyContactsRequest = None):
                 ))
         except Exception as e:
             logger.error("Hunter domain search error: %s", e)
-            raise HTTPException(status_code=502, detail=f"Hunter.io error: {str(e)}")
+            return CompanyContactsResponse(
+                domain=domain, company_name=None, contacts=[],
+                message=f"Hunter error: {e}",
+            )
+
+        # Store in cache
+        ttl_days = max(1, settings.cache_ttl_hunter_days)
+        cache_payload = json.dumps({
+            "company_name": company_name,
+            "contacts": [c.model_dump() for c in contacts],
+        })
+        expires = now + timedelta(days=ttl_days)
+        if cached:
+            cached.response_json = cache_payload
+            cached.expires_at = expires
+        else:
+            db.add(HunterCache(domain=domain, response_json=cache_payload, expires_at=expires))
+        try:
+            db.commit()
+        except Exception:
+            db.rollback()
 
     elif source == "snov":
-        if SnovService is None:
-            raise HTTPException(status_code=503, detail="Snov.io service not available")
-        if not settings.snov_client_id or not settings.snov_client_secret:
-            raise HTTPException(status_code=503, detail="Snov.io credentials not configured")
-
+        if SnovService is None or not settings.snov_client_id or not settings.snov_client_secret:
+            return CompanyContactsResponse(
+                domain=domain, company_name=None, contacts=[],
+                message="Snov not configured",
+            )
         try:
             snov = SnovService()
-            # Get company profile
             company_profile = snov.get_company_profile(domain)
             if company_profile:
                 company_name = company_profile.get("name")
-
-            # Get contacts
             results = snov.get_emails_by_domain(domain)
             for person in results:
                 contacts.append(ExecutiveContact(
@@ -1041,10 +1185,15 @@ def get_company_contacts(domain: str, request: CompanyContactsRequest = None):
                 ))
         except Exception as e:
             logger.error("Snov.io domain search error: %s", e)
-            raise HTTPException(status_code=502, detail=f"Snov.io error: {str(e)}")
-
+            return CompanyContactsResponse(
+                domain=domain, company_name=None, contacts=[],
+                message=f"Snov error: {e}",
+            )
     else:
-        raise HTTPException(status_code=400, detail="Invalid source. Use 'hunter' or 'snov'")
+        return CompanyContactsResponse(
+            domain=domain, company_name=None, contacts=[],
+            message="Invalid source. Use 'hunter' or 'snov'",
+        )
 
     return CompanyContactsResponse(
         domain=domain,
@@ -1392,13 +1541,14 @@ def get_qualified_leads(db: Session = Depends(get_db)):
 
 
 @app.post("/api/leads/{lead_id}/approve", response_model=GmailSendResponse)
-def approve_lead(lead_id: int, db: Session = Depends(get_db)):
+def approve_lead(lead_id: int, request: Request, db: Session = Depends(get_db)):
     """
     Approve a drafted lead — sends the saved draft via Gmail and marks as 'sent'.
 
     Requires the lead to have email_subject, email_body, and contact_email saved
     (set via the save_draft endpoint from the Inbox page).
     """
+    user_key = get_user_key(request)
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
@@ -1409,7 +1559,7 @@ def approve_lead(lead_id: int, db: Session = Depends(get_db)):
             error="No saved draft found. Open this lead in Inbox to compose and save a draft first.",
         )
 
-    if gmail is None or not gmail.is_connected():
+    if not _is_gmail_connected(db, user_key):
         return GmailSendResponse(
             success=False, lead_id=lead_id,
             error="Gmail not connected. Connect in Settings first.",
@@ -1428,7 +1578,8 @@ def approve_lead(lead_id: int, db: Session = Depends(get_db)):
             error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached.",
         )
 
-    result = gmail.send_email(
+    result = _send_email_for_user(
+        db, user_key,
         to=lead.contact_email,
         subject=lead.email_subject,
         body=lead.email_body,
@@ -1535,10 +1686,8 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
     if not lead.website:
         raise HTTPException(status_code=400, detail="Lead has no website — cannot look up contacts")
 
-    if HunterService is None:
-        raise HTTPException(status_code=503, detail="Hunter.io service not available")
-    if not settings.hunter_api_key:
-        raise HTTPException(status_code=503, detail="Hunter.io API key not configured")
+    if HunterService is None or not settings.hunter_api_key:
+        raise HTTPException(status_code=503, detail="Hunter.io not configured")
 
     # Extract clean domain from website URL
     domain = lead.website
@@ -1550,12 +1699,61 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
     if not domain:
         raise HTTPException(status_code=400, detail="Could not extract domain from lead website")
 
-    try:
-        hunter = HunterService()
-        results = hunter.domain_search(domain)
-    except Exception as e:
-        logger.error("Hunter fetch_contacts error for lead %d: %s", lead_id, e)
-        raise HTTPException(status_code=502, detail=f"Hunter.io error: {str(e)}")
+    now = datetime.utcnow()
+    results = None
+
+    # Check hunter cache first
+    cached_hunter = db.query(HunterCache).filter(HunterCache.domain == domain).first()
+    if cached_hunter and cached_hunter.expires_at > now:
+        try:
+            cached_data = json.loads(cached_hunter.response_json)
+            results = [
+                {
+                    "name": c.get("name") or "Unknown",
+                    "job_title": c.get("title"),
+                    "email": c.get("email"),
+                    "linkedin_url": c.get("linkedin_url"),
+                }
+                for c in cached_data.get("contacts", [])
+            ]
+            logger.info("Hunter cache hit for domain %s (lead %d)", domain, lead_id)
+        except Exception:
+            results = None
+
+    if results is None:
+        try:
+            hunter = HunterService()
+            results = hunter.domain_search(domain)
+        except Exception as e:
+            logger.error("Hunter fetch_contacts error for lead %d: %s", lead_id, e)
+            raise HTTPException(status_code=502, detail=f"Hunter.io error: {str(e)}")
+
+        # Store in cache
+        if results is not None:
+            ttl_days = max(1, settings.cache_ttl_hunter_days)
+            cache_payload = json.dumps({
+                "company_name": lead.company,
+                "contacts": [
+                    {
+                        "name": p.get("name") or "Unknown",
+                        "title": p.get("job_title"),
+                        "email": p.get("email"),
+                        "linkedin_url": p.get("linkedin_url"),
+                        "source": "hunter",
+                    }
+                    for p in results
+                ],
+            })
+            expires = now + timedelta(days=ttl_days)
+            if cached_hunter:
+                cached_hunter.response_json = cache_payload
+                cached_hunter.expires_at = expires
+            else:
+                db.add(HunterCache(domain=domain, response_json=cache_payload, expires_at=expires))
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
 
     if results:
         contacts_list = [
@@ -1796,15 +1994,10 @@ def oauth_callback(code: str = Query(...), state: str = Query(None)):
 
 
 @app.get("/api/gmail/status", response_model=GmailConnectResponse)
-def get_gmail_status():
-    """Get current Gmail connection status."""
-    if gmail is None:
-        return GmailConnectResponse(
-            connected=False,
-            error="Gmail service not available - Google libraries not installed",
-        )
-
-    status = gmail.get_connection_status()
+def get_gmail_status(request: Request, db: Session = Depends(get_db)):
+    """Get current Gmail connection status (DB-backed per-user, falls back to file)."""
+    user_key = get_user_key(request)
+    status = _gmail_status_for_user(db, user_key)
     return GmailConnectResponse(
         connected=status["connected"],
         email=status.get("email"),
@@ -1812,77 +2005,124 @@ def get_gmail_status():
     )
 
 
+@app.get("/api/gmail/auth/start")
+def gmail_auth_start(request: Request):
+    """
+    Start Gmail OAuth — returns {url} for the Google consent screen.
+
+    Uses DB-backed token storage (GOOGLE_CLIENT_ID/SECRET required).
+    """
+    user_key = get_user_key(request)
+    if gmail_service is None:
+        return {"error": "gmail_service module not available"}
+    url = gmail_service.build_auth_url(user_key)
+    if not url:
+        return {"error": "Google OAuth credentials not configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI)"}
+    return {"url": url}
+
+
+@app.get("/api/gmail/auth/callback", response_class=HTMLResponse)
+def gmail_auth_callback(
+    code: str = Query(...),
+    state: str = Query(None),
+    db: Session = Depends(get_db),
+):
+    """
+    Google OAuth callback — exchanges code, stores encrypted tokens, returns HTML.
+
+    Google redirects here after user authorises. The `state` param carries user_key.
+    """
+    user_key = state or "local_user"
+    if gmail_service is None:
+        return HTMLResponse("<h1>gmail_service not available</h1>", status_code=503)
+
+    email_address = gmail_service.exchange_code(db, code, user_key)
+    if email_address:
+        return HTMLResponse(f"""<!DOCTYPE html>
+<html><head><title>Gmail Connected</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:50px">
+  <h1>Gmail Connected!</h1>
+  <p>Connected as <strong>{email_address}</strong></p>
+  <p>You can close this window and return to ADINA.</p>
+</body></html>""")
+    return HTMLResponse("""<!DOCTYPE html>
+<html><head><title>Gmail Connection Failed</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:50px">
+  <h1>Gmail Connection Failed</h1>
+  <p>Could not exchange code for tokens. Please try again.</p>
+</body></html>""", status_code=400)
+
+
+@app.post("/api/gmail/disconnect")
+def gmail_disconnect(request: Request, db: Session = Depends(get_db)):
+    """
+    Disconnect Gmail for the current user_key.
+
+    Removes DB tokens only for this user — other users are unaffected.
+    Also clears file-based token for backward compatibility.
+    """
+    user_key = get_user_key(request)
+    db_removed = False
+    if gmail_service is not None:
+        db_removed = gmail_service.disconnect(db, user_key)
+    # Also clear file-based token for backward compat
+    if gmail is not None:
+        try:
+            gmail.disconnect()
+        except Exception:
+            pass
+    return {"success": True, "user_key": user_key, "db_token_removed": db_removed}
+
+
 @app.post("/api/gmail/send/{lead_id}", response_model=GmailSendResponse)
-def send_email_to_lead(lead_id: int, db: Session = Depends(get_db)):
+def send_email_to_lead(lead_id: int, request: Request, db: Session = Depends(get_db)):
     """
     Send the drafted email to a lead via Gmail.
 
-    Requirements:
-    - Lead must exist
-    - Lead status must be 'approved'
-    - Lead must have contact_email
-    - Lead must have email_subject and email_body (drafted)
-    - Gmail must be connected
-    - Daily send limit (100) must not be exceeded
+    Email always sent FROM the account authenticated under x-user-key (default: local_user).
     """
-    if gmail is None:
-        return GmailSendResponse(
-            success=False,
-            lead_id=lead_id,
-            error="Gmail service not available - Google libraries not installed",
-        )
+    user_key = get_user_key(request)
 
     if settings.demo_mode:
         raise HTTPException(status_code=403, detail="Demo mode: sending disabled")
 
-    # Check Gmail connection
-    if not gmail.is_connected():
+    if not _is_gmail_connected(db, user_key):
         return GmailSendResponse(
-            success=False,
-            lead_id=lead_id,
-            error="Gmail not connected. Please connect via /api/gmail/connect first.",
+            success=False, lead_id=lead_id,
+            error="Gmail not connected. Please connect via /api/gmail/auth/start first.",
         )
 
-    # Check daily limit
     daily_count = get_daily_email_count(db)
     if daily_count >= DAILY_SEND_LIMIT:
         return GmailSendResponse(
-            success=False,
-            lead_id=lead_id,
+            success=False, lead_id=lead_id,
             error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached. Try again tomorrow.",
         )
 
-    # Get lead
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    # Check lead status - must be approved
     if lead.status != "approved":
         return GmailSendResponse(
-            success=False,
-            lead_id=lead_id,
+            success=False, lead_id=lead_id,
             error=f"Lead status must be 'approved' to send. Current status: '{lead.status}'",
         )
 
-    # Check contact email
     if not lead.contact_email:
         return GmailSendResponse(
-            success=False,
-            lead_id=lead_id,
+            success=False, lead_id=lead_id,
             error="Lead has no contact_email",
         )
 
-    # Check draft exists
     if not lead.email_subject or not lead.email_body:
         return GmailSendResponse(
-            success=False,
-            lead_id=lead_id,
-            error="Lead has no drafted email. Generate a draft first via /api/leads/{lead_id}/draft",
+            success=False, lead_id=lead_id,
+            error="Lead has no drafted email. Generate a draft first.",
         )
 
-    # Send the email
-    result = gmail.send_email(
+    result = _send_email_for_user(
+        db, user_key,
         to=lead.contact_email,
         subject=lead.email_subject,
         body=lead.email_body,
@@ -2047,53 +2287,51 @@ def send_batch_emails(request: BatchSendRequest, db: Session = Depends(get_db)):
 
 
 @app.post("/api/gmail/send_reply", response_model=GmailSendResponse)
-def send_reply_email(request: SendReplyRequest, db: Session = Depends(get_db)):
+def send_reply_email(send_request: SendReplyRequest, request: Request, db: Session = Depends(get_db)):
     """
     Send a drafted reply email via Gmail OAuth.
 
     Used by the Inbox page to send a classified/drafted reply to a specific recipient.
     Does not require the lead to be in 'approved' status.
+    Email is sent FROM the authenticated Gmail account of the current user (x-user-key).
     """
-    if gmail is None:
-        return GmailSendResponse(
-            success=False, lead_id=request.lead_id,
-            error="Gmail service not available",
-        )
+    user_key = get_user_key(request)
 
     if settings.demo_mode:
         raise HTTPException(status_code=403, detail="Demo mode: sending disabled")
 
-    if not gmail.is_connected():
+    if not _is_gmail_connected(db, user_key):
         return GmailSendResponse(
-            success=False, lead_id=request.lead_id,
+            success=False, lead_id=send_request.lead_id,
             error="Gmail not connected. Connect in Settings first.",
         )
 
     daily_count = get_daily_email_count(db)
     if daily_count >= DAILY_SEND_LIMIT:
         return GmailSendResponse(
-            success=False, lead_id=request.lead_id,
+            success=False, lead_id=send_request.lead_id,
             error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached.",
         )
 
-    lead = db.query(Lead).filter(Lead.id == request.lead_id).first()
+    lead = db.query(Lead).filter(Lead.id == send_request.lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    result = gmail.send_email(
-        to=request.to_email,
-        subject=request.subject,
-        body=request.body,
+    result = _send_email_for_user(
+        db, user_key,
+        to=send_request.to_email,
+        subject=send_request.subject,
+        body=send_request.body,
     )
 
     if result["success"]:
         lead.status = "sent"
-        lead.contact_email = request.to_email
+        lead.contact_email = send_request.to_email
         sent_email = SentEmail(
             lead_id=lead.id,
-            to_email=request.to_email,
-            subject=request.subject,
-            body=request.body,
+            to_email=send_request.to_email,
+            subject=send_request.subject,
+            body=send_request.body,
             gmail_message_id=result["message_id"],
             sent_date=date.today(),
         )
@@ -2102,12 +2340,12 @@ def send_reply_email(request: SendReplyRequest, db: Session = Depends(get_db)):
         db.commit()
 
         return GmailSendResponse(
-            success=True, lead_id=request.lead_id,
+            success=True, lead_id=send_request.lead_id,
             message_id=result["message_id"],
         )
     else:
         return GmailSendResponse(
-            success=False, lead_id=request.lead_id,
+            success=False, lead_id=send_request.lead_id,
             error=result["error"],
         )
 
