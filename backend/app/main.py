@@ -619,32 +619,57 @@ def pull_leads(request: PullLeadsRequest, db: Session = Depends(get_db)):
             logger.error("Hunter API error for domain %s: %s", domain, e)
             raise HTTPException(status_code=502, detail=f"Hunter API error: {e}")
 
-        for person in people:
-            # Deduplicate by email if available, otherwise by name + company
-            if person.get("email"):
-                exists = db.query(Lead).filter(Lead.contact_email == person["email"]).first()
-            else:
-                exists = db.query(Lead).filter(
-                    Lead.contact_name == person.get("name"),
-                    Lead.company == (person.get("company_name") or "Unknown"),
-                ).first()
+        if not people:
+            continue
 
-            if exists:
-                continue
+        # Deduplicate: skip if a lead with this domain/website already exists
+        existing = db.query(Lead).filter(Lead.website.ilike(f"%{domain}%")).first()
+        if existing:
+            # Update contacts_json on existing lead if it's empty
+            if not existing.contacts_json and people:
+                contacts_list = [
+                    {
+                        "name": p.get("name") or "Unknown",
+                        "title": p.get("job_title"),
+                        "email": p.get("email"),
+                        "linkedin_url": p.get("linkedin_url"),
+                        "source": "hunter",
+                    }
+                    for p in people
+                ]
+                existing.contacts_json = json.dumps(contacts_list)
+                db.commit()
+            continue
 
-            lead = Lead(
-                company=person.get("company_name") or "Unknown",
-                industry="Unknown",
-                contact_name=person.get("name"),
-                contact_role=person.get("job_title"),
-                contact_email=person.get("email"),
-                source="hunter",
-                source_url=person.get("linkedin_url"),
-                website=person.get("domain"),
-                status="new",
-            )
-            db.add(lead)
-            added += 1
+        # Build full contacts list for contacts_json
+        contacts_list = [
+            {
+                "name": p.get("name") or "Unknown",
+                "title": p.get("job_title"),
+                "email": p.get("email"),
+                "linkedin_url": p.get("linkedin_url"),
+                "source": "hunter",
+            }
+            for p in people
+        ]
+
+        # Primary contact: first one with an email
+        primary = next((p for p in people if p.get("email")), people[0])
+        company_name = primary.get("company_name") or domain
+
+        lead = Lead(
+            company=company_name,
+            industry="Unknown",
+            contact_name=primary.get("name"),
+            contact_role=primary.get("job_title"),
+            contact_email=primary.get("email"),
+            contacts_json=json.dumps(contacts_list),
+            source="hunter",
+            website=f"https://{domain}",
+            status="new",
+        )
+        db.add(lead)
+        added += 1
 
     db.commit()
     return PullLeadsResponse(new_leads_added=added)
@@ -1396,6 +1421,113 @@ def qualify_lead(lead_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return ApprovalResponse(lead_id=lead.id, status=lead.status)
+
+
+@app.post("/api/leads/{lead_id}/fetch_contacts", response_model=LeadProfile)
+def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
+    """
+    Fetch and save contacts for a lead using Hunter.io.
+
+    - Extracts domain from lead's website field
+    - Calls Hunter.io to find all contacts at that domain
+    - Saves results to contacts_json on the lead
+    - Sets primary contact fields if not already set
+    """
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    if not lead.website:
+        raise HTTPException(status_code=400, detail="Lead has no website — cannot look up contacts")
+
+    if HunterService is None:
+        raise HTTPException(status_code=503, detail="Hunter.io service not available")
+    if not settings.hunter_api_key:
+        raise HTTPException(status_code=503, detail="Hunter.io API key not configured")
+
+    # Extract clean domain from website URL
+    domain = lead.website
+    for prefix in ("https://", "http://", "www."):
+        if domain.startswith(prefix):
+            domain = domain[len(prefix):]
+    domain = domain.split("/")[0].strip()
+
+    if not domain:
+        raise HTTPException(status_code=400, detail="Could not extract domain from lead website")
+
+    try:
+        hunter = HunterService()
+        results = hunter.domain_search(domain)
+    except Exception as e:
+        logger.error("Hunter fetch_contacts error for lead %d: %s", lead_id, e)
+        raise HTTPException(status_code=502, detail=f"Hunter.io error: {str(e)}")
+
+    if results:
+        contacts_list = [
+            {
+                "name": p.get("name") or "Unknown",
+                "title": p.get("job_title"),
+                "email": p.get("email"),
+                "linkedin_url": p.get("linkedin_url"),
+                "source": "hunter",
+            }
+            for p in results
+        ]
+        lead.contacts_json = json.dumps(contacts_list)
+
+        # Set primary contact fields if not already populated
+        primary = next((c for c in contacts_list if c.get("email")), contacts_list[0])
+        if not lead.contact_name:
+            lead.contact_name = primary.get("name")
+        if not lead.contact_email:
+            lead.contact_email = primary.get("email")
+        if not lead.contact_role:
+            lead.contact_role = primary.get("title")
+
+        db.commit()
+        db.refresh(lead)
+
+    # Build and return the updated profile
+    contacts: list = []
+    if lead.contacts_json:
+        try:
+            raw = json.loads(lead.contacts_json)
+            for c in raw:
+                contacts.append(ProfileContact(
+                    name=c.get("name", "Unknown"),
+                    title=c.get("title"),
+                    email=c.get("email"),
+                    linkedin_url=c.get("linkedin_url"),
+                    source=c.get("source"),
+                ))
+        except (TypeError, ValueError):
+            pass
+    if not contacts and (lead.contact_name or lead.contact_email):
+        contacts.append(ProfileContact(
+            name=lead.contact_name or "Unknown",
+            title=lead.contact_role,
+            email=lead.contact_email,
+            linkedin_url=None,
+            source=lead.source,
+        ))
+
+    return LeadProfile(
+        id=lead.id,
+        company=lead.company,
+        website=lead.website,
+        phone=lead.phone,
+        location=lead.location,
+        description=lead.notes,
+        linkedin_url=lead.linkedin_url,
+        contacts=contacts,
+        status=lead.status,
+        source=lead.source,
+        industry=lead.industry,
+        employees=lead.employees,
+        stage=lead.stage,
+        contact_name=lead.contact_name,
+        contact_email=lead.contact_email,
+    )
 
 
 @app.post("/api/replies/draft", response_model=ReplyDraftResponse)

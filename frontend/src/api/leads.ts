@@ -54,6 +54,11 @@ export async function qualifyLead(id: number): Promise<ApprovalResponse> {
   return data
 }
 
+export async function fetchLeadContacts(id: number): Promise<LeadProfile> {
+  const { data } = await apiClient.post<LeadProfile>(`/api/leads/${id}/fetch_contacts`)
+  return data
+}
+
 export async function approveLead(id: number): Promise<ApprovalResponse> {
   const { data } = await apiClient.post<ApprovalResponse>(`/api/leads/${id}/approve`)
   return data

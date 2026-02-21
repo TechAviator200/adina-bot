@@ -1,6 +1,6 @@
 import { useContext, useEffect, useState } from 'react'
 import { LeadProfileContext } from '../../context/LeadProfileContext'
-import { getLeadProfile } from '../../api/leads'
+import { getLeadProfile, fetchLeadContacts } from '../../api/leads'
 import type { LeadProfile } from '../../api/types'
 
 const STATUS_COLORS: Record<string, string> = {
@@ -25,10 +25,13 @@ export default function ProfilePanel() {
   const { selectedLeadId, refreshKey } = useContext(LeadProfileContext)
   const [profile, setProfile] = useState<LeadProfile | null>(null)
   const [loading, setLoading] = useState(false)
+  const [fetchingContacts, setFetchingContacts] = useState(false)
+  const [contactsError, setContactsError] = useState<string | null>(null)
 
   useEffect(() => {
     if (!selectedLeadId) {
       setProfile(null)
+      setContactsError(null)
       return
     }
     setLoading(true)
@@ -37,6 +40,24 @@ export default function ProfilePanel() {
       .catch(() => setProfile(null))
       .finally(() => setLoading(false))
   }, [selectedLeadId, refreshKey])
+
+  async function handleFetchContacts() {
+    if (!selectedLeadId) return
+    setFetchingContacts(true)
+    setContactsError(null)
+    try {
+      const updated = await fetchLeadContacts(selectedLeadId)
+      setProfile(updated)
+      if (updated.contacts.length === 0) {
+        setContactsError('No contacts found for this domain')
+      }
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to fetch contacts'
+      setContactsError(msg)
+    } finally {
+      setFetchingContacts(false)
+    }
+  }
 
   return (
     <aside className="w-80 bg-soft-navy border-l border-warm-gray/20 flex flex-col shrink-0">
@@ -146,9 +167,20 @@ export default function ProfilePanel() {
             {/* Contacts */}
             {profile.contacts.length > 0 ? (
               <div>
-                <p className="text-[10px] uppercase tracking-wide text-warm-gray mb-2">
-                  Contacts ({profile.contacts.length})
-                </p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-[10px] uppercase tracking-wide text-warm-gray">
+                    Contacts ({profile.contacts.length})
+                  </p>
+                  {profile.website && (
+                    <button
+                      onClick={handleFetchContacts}
+                      disabled={fetchingContacts}
+                      className="text-[10px] text-warm-gray hover:text-terracotta disabled:opacity-50 transition-colors"
+                    >
+                      {fetchingContacts ? 'Refreshing...' : '↺ Refresh'}
+                    </button>
+                  )}
+                </div>
                 <div className="space-y-2">
                   {profile.contacts.map((c, i) => (
                     <div
@@ -201,7 +233,25 @@ export default function ProfilePanel() {
                 </div>
               </div>
             ) : (
-              <p className="text-xs text-warm-gray/60 text-center py-2">No contacts stored</p>
+              <div className="text-center py-3 space-y-2">
+                <p className="text-xs text-warm-gray/60">No contacts stored</p>
+                {profile.website ? (
+                  <>
+                    <button
+                      onClick={handleFetchContacts}
+                      disabled={fetchingContacts}
+                      className="text-xs text-terracotta hover:underline disabled:opacity-50 transition-colors"
+                    >
+                      {fetchingContacts ? 'Looking up contacts...' : 'Find Contacts via Hunter.io'}
+                    </button>
+                    {contactsError && (
+                      <p className="text-[11px] text-warm-gray">{contactsError}</p>
+                    )}
+                  </>
+                ) : (
+                  <p className="text-[11px] text-warm-gray">Add a website to enable contact lookup</p>
+                )}
+              </div>
             )}
           </div>
         )}
