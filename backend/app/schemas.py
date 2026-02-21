@@ -295,6 +295,9 @@ class LeadProfile(BaseModel):
     stage: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
+    score: Optional[float] = None
+    score_reasons: Optional[List[str]] = None
+    quality_label: Optional[str] = None
 
 
 class ImportCompanyRequest(BaseModel):

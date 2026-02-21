@@ -47,6 +47,9 @@ export interface LeadProfile {
   stage: string | null
   contact_name: string | null
   contact_email: string | null
+  score?: number
+  score_reasons?: string[]
+  quality_label?: string
 }
 
 export interface UploadResponse {

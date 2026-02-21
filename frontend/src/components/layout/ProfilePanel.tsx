@@ -1,4 +1,5 @@
 import { useContext, useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { LeadProfileContext } from '../../context/LeadProfileContext'
 import { getLeadProfile, fetchLeadContacts } from '../../api/leads'
 import type { LeadProfile } from '../../api/types'
@@ -10,6 +11,16 @@ const STATUS_COLORS: Record<string, string> = {
   approved: 'bg-green-500/20 text-green-400',
   sent: 'bg-terracotta/20 text-terracotta',
   ignored: 'bg-warm-gray/10 text-warm-gray/60',
+}
+
+const QUALITY_COLORS: Record<string, string> = {
+  'Hot Lead': 'bg-terracotta/20 text-terracotta border border-terracotta/30',
+  'Strong Fit': 'bg-green-500/20 text-green-400 border border-green-500/30',
+  'Good Fit': 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
+  'Possible Fit': 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
+  'Possible Fit — Not Hiring Now': 'bg-yellow-500/10 text-yellow-500/70 border border-yellow-500/20',
+  'Weak Fit': 'bg-warm-gray/20 text-warm-gray border border-warm-gray/20',
+  'Poor Fit': 'bg-red-500/15 text-red-400/80 border border-red-500/20',
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -27,6 +38,7 @@ export default function ProfilePanel() {
   const [loading, setLoading] = useState(false)
   const [fetchingContacts, setFetchingContacts] = useState(false)
   const [contactsError, setContactsError] = useState<string | null>(null)
+  const navigate = useNavigate()
 
   useEffect(() => {
     if (!selectedLeadId) {
@@ -89,6 +101,16 @@ export default function ProfilePanel() {
                   <span className="text-xs text-warm-gray">{profile.industry}</span>
                 )}
               </div>
+              {profile.quality_label && (
+                <div className="mt-2">
+                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${QUALITY_COLORS[profile.quality_label] ?? 'bg-warm-gray/20 text-warm-gray'}`}>
+                    {profile.quality_label}
+                  </span>
+                  {profile.score !== undefined && (
+                    <span className="text-[10px] text-warm-gray ml-2">Score: {Math.round(profile.score)}/100</span>
+                  )}
+                </div>
+              )}
             </div>
 
             <div className="border-t border-warm-gray/10" />
@@ -153,14 +175,31 @@ export default function ProfilePanel() {
               </Field>
             )}
 
-            {/* Description */}
+            {/* Description / About */}
             {profile.description && (
               <Field label="About">
                 <p className="text-xs text-warm-cream/80 leading-relaxed">{profile.description}</p>
               </Field>
             )}
 
-            {(profile.website || profile.phone || profile.location || profile.employees || profile.stage || profile.linkedin_url || profile.description) && (
+            {/* Fit Assessment */}
+            {profile.score_reasons && profile.score_reasons.length > 0 && (
+              <Field label="Why this lead?">
+                <ul className="space-y-1 mt-0.5">
+                  {profile.score_reasons.map((reason, i) => {
+                    const isNegative = reason.includes('(-')
+                    return (
+                      <li key={i} className={`text-[11px] leading-relaxed flex gap-1.5 ${isNegative ? 'text-red-400/80' : 'text-warm-cream/70'}`}>
+                        <span className="shrink-0">{isNegative ? '✗' : '✓'}</span>
+                        <span>{reason}</span>
+                      </li>
+                    )
+                  })}
+                </ul>
+              </Field>
+            )}
+
+            {(profile.website || profile.phone || profile.location || profile.employees || profile.stage || profile.linkedin_url || profile.description || (profile.score_reasons && profile.score_reasons.length > 0)) && (
               <div className="border-t border-warm-gray/10" />
             )}
 
@@ -192,12 +231,13 @@ export default function ProfilePanel() {
                         <p className="text-[11px] text-warm-gray">{c.title}</p>
                       )}
                       {c.email && (
-                        <a
-                          href={`mailto:${c.email}`}
-                          className="text-[11px] text-terracotta hover:underline block"
+                        <button
+                          onClick={() => navigate(`/inbox?leadId=${profile.id}&email=${encodeURIComponent(c.email!)}`)}
+                          className="text-[11px] text-terracotta hover:underline block text-left"
+                          title="Open in Inbox"
                         >
                           {c.email}
-                        </a>
+                        </button>
                       )}
                       {c.linkedin_url && (
                         <a
@@ -224,12 +264,13 @@ export default function ProfilePanel() {
                   {profile.contact_name && (
                     <p className="text-xs text-warm-cream font-medium">{profile.contact_name}</p>
                   )}
-                  <a
-                    href={`mailto:${profile.contact_email}`}
-                    className="text-[11px] text-terracotta hover:underline block"
+                  <button
+                    onClick={() => navigate(`/inbox?leadId=${profile.id}&email=${encodeURIComponent(profile.contact_email!)}`)}
+                    className="text-[11px] text-terracotta hover:underline block text-left"
+                    title="Open in Inbox"
                   >
                     {profile.contact_email}
-                  </a>
+                  </button>
                 </div>
               </div>
             ) : (

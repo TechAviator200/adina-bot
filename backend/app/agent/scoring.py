@@ -21,24 +21,66 @@ KNOWLEDGE_PACK_INDUSTRIES = [
     industry.lower() for industry in KNOWLEDGE_PACK.get("industries_served", [])
 ]
 
-# Keywords that indicate operational needs in notes
+# Strong positive signals — explicit "hot/strong lead" or specific ADINA service need
+STRONG_POSITIVE_SIGNALS = [
+    "hot lead",
+    "strong lead",
+    "needs procurement",
+    "needs supply",
+    "needs operations",
+    "needs ops",
+    "needs strategy",
+    "needs logistics",
+    "needs project manager",
+    "needs senior consultant",
+    "needs coordinator",
+    "needs director",
+    "needs manager",
+    "in need of supply",
+    "in need of strategy",
+    "in need of operations",
+    "in need of ops",
+    "in need of logistics",
+    "urgent need",
+    "immediate need",
+]
+
+# General operational keywords (weaker signal)
 OPS_KEYWORDS = [
     "ops",
     "operations",
     "scaling",
     "scale",
     "growth",
-    "hiring",
     "growing",
     "expand",
     "expansion",
     "coordinator",
     "manager",
     "director",
-    "needs",
     "looking for",
-    "hot lead",
-    "strong lead",
+]
+
+# Negative signals — lead has explicitly stated they are NOT a current fit
+NEGATIVE_SIGNALS = [
+    "only hiring brokers",
+    "only hiring analysts",
+    "only hiring for sales",
+    "only hiring sales",
+    "only hiring agents",
+    "no immediate hiring for strategy",
+    "no immediate hiring for ops",
+    "no immediate hiring for strateg",
+    "no immediate need",
+    "no overlap",
+    "not a fit",
+    "not interested",
+    "no operational need",
+    "no plans to hire",
+    "no need for",
+    "downsizing",
+    "laying off",
+    "restructuring",
 ]
 
 # US states and common US location indicators
@@ -143,18 +185,65 @@ def is_stage_match(stage: Optional[str]) -> bool:
     return False
 
 
-def has_ops_keywords(notes: Optional[str]) -> bool:
-    """Check if notes mention ops, scaling, growth, hiring, etc."""
+def has_strong_positive_signal(notes: Optional[str]) -> bool:
+    """Check if notes contain an explicit hot/strong lead signal."""
     if not notes:
         return False
+    notes_lower = notes.lower()
+    return any(sig in notes_lower for sig in STRONG_POSITIVE_SIGNALS)
+
+
+def has_ops_keywords(notes: Optional[str]) -> bool:
+    """Check if notes mention ops, scaling, growth, etc. (weaker positive signal)."""
+    if not notes:
+        return False
+    notes_lower = notes.lower()
+    return any(keyword in notes_lower for keyword in OPS_KEYWORDS)
+
+
+def has_negative_signal(notes: Optional[str]) -> bool:
+    """Check if notes indicate the lead is explicitly NOT a current fit."""
+    if not notes:
+        return False
+    notes_lower = notes.lower()
+    return any(sig in notes_lower for sig in NEGATIVE_SIGNALS)
+
+
+def get_matched_signals(notes: Optional[str]) -> dict:
+    """
+    Return matched positive and negative signals from notes.
+
+    Returns dict with keys:
+        strong_positives: list of matched strong positive phrases
+        ops_keywords: list of matched general ops keywords
+        negatives: list of matched negative phrases
+    """
+    if not notes:
+        return {"strong_positives": [], "ops_keywords": [], "negatives": []}
 
     notes_lower = notes.lower()
+    return {
+        "strong_positives": [s for s in STRONG_POSITIVE_SIGNALS if s in notes_lower],
+        "ops_keywords": [k for k in OPS_KEYWORDS if k in notes_lower],
+        "negatives": [s for s in NEGATIVE_SIGNALS if s in notes_lower],
+    }
 
-    for keyword in OPS_KEYWORDS:
-        if keyword in notes_lower:
-            return True
 
-    return False
+def get_quality_label(score: float, has_neg: bool) -> str:
+    """Return a human-readable quality label based on score and signals."""
+    if has_neg:
+        if score >= 65:
+            return "Possible Fit — Not Hiring Now"
+        return "Poor Fit"
+    if score >= 90:
+        return "Hot Lead"
+    if score >= 70:
+        return "Strong Fit"
+    if score >= 50:
+        return "Good Fit"
+    if score >= 30:
+        return "Possible Fit"
+    return "Weak Fit"
 
 
 def score_lead(lead: Lead) -> ScoreResult:
@@ -199,24 +288,31 @@ def score_lead(lead: Lead) -> ScoreResult:
         score += 15
         reasons.append(f"Stage '{lead.stage}' indicates Series A (+15)")
 
-    # Notes keyword match: +15
-    if has_ops_keywords(lead.notes):
-        score += 15
-        # Find which keywords matched for transparency
-        matched_keywords = [
-            kw for kw in OPS_KEYWORDS
-            if lead.notes and kw in lead.notes.lower()
-        ]
-        keyword_sample = ", ".join(matched_keywords[:3])
-        if len(matched_keywords) > 3:
-            keyword_sample += "..."
-        reasons.append(f"Notes contain operational keywords: {keyword_sample} (+15)")
+    # Notes signal analysis
+    signals = get_matched_signals(lead.notes)
 
-    # Cap score at 100
-    score = min(score, 100.0)
+    if signals["strong_positives"]:
+        # Hot/strong lead or explicit ADINA service need → +20
+        score += 20
+        sample = ", ".join(signals["strong_positives"][:2])
+        reasons.append(f"Notes show explicit demand: '{sample}' (+20)")
+    elif signals["ops_keywords"]:
+        # General operational keywords → +10
+        score += 10
+        sample = ", ".join(signals["ops_keywords"][:3])
+        reasons.append(f"Notes mention operational activity: {sample} (+10)")
+
+    if signals["negatives"]:
+        # Explicit not-a-fit signal → -15
+        score -= 15
+        sample = signals["negatives"][0]
+        reasons.append(f"Notes indicate current mismatch: '{sample}' (-15)")
+
+    # Cap score between 0 and 100
+    score = max(0.0, min(score, 100.0))
 
     # Add summary if no reasons
     if not reasons:
-        reasons.append("No scoring criteria matched")
+        reasons.append("No scoring criteria matched — needs manual review")
 
     return ScoreResult(score=score, reasons=reasons)

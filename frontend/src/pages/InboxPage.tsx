@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { getOutreachTemplates } from '../api/inbox'
 import { getLeads, fetchLeadContacts } from '../api/leads'
 import { getGmailStatus, sendReply } from '../api/gmail'
@@ -17,6 +18,7 @@ function parseLeadContacts(lead: Lead): ProfileContact[] {
 }
 
 export default function InboxPage() {
+  const [searchParams, setSearchParams] = useSearchParams()
   const [leads, setLeads] = useState<Lead[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<number | ''>('')
   const [selectedRecipient, setSelectedRecipient] = useState<string>('')
@@ -29,16 +31,42 @@ export default function InboxPage() {
   const [fetchingContacts, setFetchingContacts] = useState(false)
   const { addLog } = useAgentLog()
   const { addToast } = useToast()
+  // Holds an email to pre-fill after a lead selection resets the recipient field
+  const pendingEmailRef = useRef<string | null>(null)
 
   useEffect(() => {
-    getLeads().then(setLeads).catch(() => {})
-    getOutreachTemplates().then(setTemplates).catch(() => {})
-    getGmailStatus().then((s) => setGmailConnected(s.connected)).catch(() => {})
+    Promise.all([
+      getLeads(),
+      getOutreachTemplates(),
+      getGmailStatus(),
+    ]).then(([fetchedLeads, fetchedTemplates, gmailStatus]) => {
+      setLeads(fetchedLeads)
+      setTemplates(fetchedTemplates)
+      setGmailConnected(gmailStatus.connected)
+
+      // Pre-fill from URL params (e.g. navigated from ProfilePanel email click)
+      const paramLeadId = searchParams.get('leadId')
+      const paramEmail = searchParams.get('email')
+      if (paramLeadId) {
+        const id = Number(paramLeadId)
+        const leadExists = fetchedLeads.some((l) => l.id === id)
+        if (leadExists) {
+          // Store email in ref so the selectedLeadId reset effect can pick it up
+          if (paramEmail) pendingEmailRef.current = decodeURIComponent(paramEmail)
+          setSelectedLeadId(id)
+        }
+      }
+      // Clear params so a refresh doesn't re-apply them
+      if (paramLeadId || paramEmail) setSearchParams({}, { replace: true })
+    }).catch(() => {})
   }, [])
 
-  // Reset recipient and draft when lead changes
+  // Reset recipient and draft when lead changes.
+  // If a pre-fill email is pending (from ProfilePanel click), apply it instead of clearing.
   useEffect(() => {
-    setSelectedRecipient('')
+    const pending = pendingEmailRef.current
+    pendingEmailRef.current = null
+    setSelectedRecipient(pending ?? '')
     setSelectedTemplateId('')
     setDraftSubject('')
     setDraftBody('')

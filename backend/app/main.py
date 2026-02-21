@@ -96,7 +96,7 @@ from app.schemas import (
     ProfileContact,
 )
 from app.agent.outbound import draft_outreach_email
-from app.agent.scoring import score_lead
+from app.agent.scoring import score_lead, get_quality_label, has_negative_signal
 from app.agent.responses import classify_reply, draft_followup_with_context
 # Gmail is optional - app must not crash if google libs are missing
 try:
@@ -1223,6 +1223,9 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
             source=lead.source,
         ))
 
+    score_result = score_lead(lead)
+    quality_label = get_quality_label(score_result["score"], has_negative_signal(lead.notes))
+
     return LeadProfile(
         id=lead.id,
         company=lead.company,
@@ -1239,6 +1242,9 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
         stage=lead.stage,
         contact_name=lead.contact_name,
         contact_email=lead.contact_email,
+        score=score_result["score"],
+        score_reasons=score_result["reasons"],
+        quality_label=quality_label,
     )
 
 
@@ -1511,6 +1517,9 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
             source=lead.source,
         ))
 
+    score_result = score_lead(lead)
+    quality_label = get_quality_label(score_result["score"], has_negative_signal(lead.notes))
+
     return LeadProfile(
         id=lead.id,
         company=lead.company,
@@ -1527,6 +1536,9 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
         stage=lead.stage,
         contact_name=lead.contact_name,
         contact_email=lead.contact_email,
+        score=score_result["score"],
+        score_reasons=score_result["reasons"],
+        quality_label=quality_label,
     )
 
 
