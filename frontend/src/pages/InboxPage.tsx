@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react'
 import { getOutreachTemplates } from '../api/inbox'
-import { getLeads } from '../api/leads'
+import { getLeads, fetchLeadContacts } from '../api/leads'
 import { getGmailStatus, sendReply } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
@@ -26,6 +26,7 @@ export default function InboxPage() {
   const [draftBody, setDraftBody] = useState('')
   const [gmailConnected, setGmailConnected] = useState(false)
   const [sendingReply, setSendingReply] = useState(false)
+  const [fetchingContacts, setFetchingContacts] = useState(false)
   const { addLog } = useAgentLog()
   const { addToast } = useToast()
 
@@ -54,6 +55,7 @@ export default function InboxPage() {
   const leadContacts = selectedLead ? parseLeadContacts(selectedLead) : []
   const emailContacts = leadContacts.filter((c) => c.email)
   const hasSingleFallback = emailContacts.length === 0 && Boolean(selectedLead?.contact_email)
+  const hasNoContacts = emailContacts.length === 0 && !hasSingleFallback
 
   // Effective recipient email
   const recipientEmail =
@@ -65,6 +67,34 @@ export default function InboxPage() {
   const canSend = Boolean(
     selectedLeadId && recipientEmail && selectedTemplateId && draftBody && gmailConnected && !sendingReply
   )
+
+  // Fetch contacts via Hunter.io and update this lead in local state
+  async function handleFetchContacts() {
+    if (!selectedLeadId) return
+    setFetchingContacts(true)
+    try {
+      const profile = await fetchLeadContacts(Number(selectedLeadId))
+      if (profile.contacts.length === 0) {
+        addToast('No contacts found for this lead', 'error')
+        return
+      }
+      // Patch the local leads state so the recipient dropdown recalculates
+      const contactsJson = JSON.stringify(profile.contacts)
+      setLeads((prev) =>
+        prev.map((l) =>
+          l.id === Number(selectedLeadId)
+            ? { ...l, contacts_json: contactsJson, contact_email: profile.contact_email, contact_name: profile.contact_name }
+            : l
+        )
+      )
+      addToast(`Found ${profile.contacts.length} contact${profile.contacts.length !== 1 ? 's' : ''}`, 'success')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Failed to find contacts'
+      addToast(msg, 'error')
+    } finally {
+      setFetchingContacts(false)
+    }
+  }
 
   async function handleSendReply() {
     if (!canSend || !selectedLeadId || !recipientEmail) return
@@ -118,7 +148,7 @@ export default function InboxPage() {
           </select>
         </div>
 
-        {/* Recipient — populated from lead's contacts */}
+        {/* Recipient */}
         {selectedLeadId && (
           <div>
             <label className="block text-xs text-warm-gray mb-1">
@@ -154,11 +184,18 @@ export default function InboxPage() {
                 )}
                 <p className="text-xs text-warm-gray mt-0.5">{selectedLead?.contact_email}</p>
               </div>
-            ) : (
-              <p className="text-xs text-warm-gray px-3 py-2 bg-soft-navy/50 border border-warm-gray/20 rounded">
-                No contacts stored for this lead.
-              </p>
-            )}
+            ) : hasNoContacts ? (
+              <div className="px-3 py-2 bg-soft-navy/50 border border-warm-gray/20 rounded flex items-center justify-between">
+                <span className="text-xs text-warm-gray">No contacts stored for this lead.</span>
+                <button
+                  onClick={handleFetchContacts}
+                  disabled={fetchingContacts}
+                  className="text-xs text-terracotta hover:underline disabled:opacity-50 shrink-0 ml-3"
+                >
+                  {fetchingContacts ? 'Looking up...' : 'Find Contacts'}
+                </button>
+              </div>
+            ) : null}
           </div>
         )}
 
@@ -181,19 +218,39 @@ export default function InboxPage() {
           </div>
         )}
 
-        {/* Draft preview */}
+        {/* Compose area — editable like a native email window */}
         {selectedTemplate && (
-          <div className="bg-soft-navy border border-warm-gray/20 rounded-lg p-4">
-            <div className="mb-3">
-              <span className="text-xs text-warm-gray block mb-1">Subject</span>
-              <p className="text-sm text-warm-cream font-medium">{draftSubject}</p>
-            </div>
-            <div>
-              <span className="text-xs text-warm-gray block mb-1">Body</span>
-              <p className="text-sm whitespace-pre-wrap text-warm-cream/90 leading-relaxed">{draftBody}</p>
+          <div className="bg-soft-navy border border-warm-gray/20 rounded-lg overflow-hidden">
+            {/* Subject row */}
+            <div className="flex items-center border-b border-warm-gray/15 px-4 py-2.5">
+              <span className="text-xs text-warm-gray w-14 shrink-0">Subject</span>
+              <input
+                value={draftSubject}
+                onChange={(e) => setDraftSubject(e.target.value)}
+                className="flex-1 bg-transparent text-sm text-warm-cream outline-none placeholder:text-warm-gray/40"
+                placeholder="Subject..."
+              />
             </div>
 
-            <div className="mt-4 pt-4 border-t border-warm-gray/10 flex items-center gap-3 flex-wrap">
+            {/* To row */}
+            <div className="flex items-center border-b border-warm-gray/15 px-4 py-2.5">
+              <span className="text-xs text-warm-gray w-14 shrink-0">To</span>
+              <span className="text-sm text-warm-cream/80">
+                {recipientEmail || <span className="text-warm-gray/50 italic">select a recipient above</span>}
+              </span>
+            </div>
+
+            {/* Body */}
+            <textarea
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
+              rows={14}
+              className="w-full bg-transparent px-4 py-3 text-sm text-warm-cream/90 leading-relaxed resize-none outline-none placeholder:text-warm-gray/40"
+              placeholder="Start typing your email..."
+            />
+
+            {/* Actions */}
+            <div className="px-4 py-3 border-t border-warm-gray/15 flex items-center gap-3">
               <Button
                 size="sm"
                 onClick={handleSendReply}
@@ -201,11 +258,11 @@ export default function InboxPage() {
               >
                 {sendingReply ? 'Sending...' : 'Reply'}
               </Button>
-              {gmailConnected && recipientEmail && (
-                <span className="text-xs text-warm-gray">→ {recipientEmail}</span>
+              {!gmailConnected && (
+                <span className="text-xs text-warm-gray">Gmail not connected</span>
               )}
               {gmailConnected && !recipientEmail && (
-                <span className="text-xs text-warm-gray">Select a recipient above</span>
+                <span className="text-xs text-warm-gray">Select a recipient above to send</span>
               )}
             </div>
           </div>
