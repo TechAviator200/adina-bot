@@ -5,6 +5,7 @@ import InboxPage from './pages/InboxPage'
 import SentPage from './pages/SentPage'
 import SettingsPage from './pages/SettingsPage'
 import DemoPage from './pages/DemoPage'
+import LoginPage from './pages/LoginPage'
 
 export default function App() {
   return (
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="/sent" element={<SentPage />} />
           <Route path="/settings" element={<SettingsPage />} />
           <Route path="/demo" element={<DemoPage />} />
+          <Route path="/login" element={<LoginPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

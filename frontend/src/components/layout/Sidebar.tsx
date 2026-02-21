@@ -1,4 +1,6 @@
+import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
+import { getGmailStatus } from '../../api/gmail'
 
 const navItems = [
   { to: '/demo', label: 'Demo' },
@@ -6,11 +8,20 @@ const navItems = [
   { to: '/inbox', label: 'Inbox' },
   { to: '/sent', label: 'Sent' },
   { to: '/settings', label: 'Settings' },
+  { to: '/login', label: 'Log In' },
 ]
 
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export default function Sidebar() {
+  const [gmailEmail, setGmailEmail] = useState<string | null>(null)
+
+  useEffect(() => {
+    getGmailStatus()
+      .then((s) => { if (s.connected && s.email) setGmailEmail(s.email) })
+      .catch(() => {})
+  }, [])
+
   return (
     <aside className="w-52 bg-soft-navy flex flex-col border-r border-warm-gray/20">
       <div className="p-4 flex items-center gap-3">
@@ -19,11 +30,16 @@ export default function Sidebar() {
           alt="ADINA"
           className="w-10 h-10 rounded-full object-cover"
         />
-        <div>
+        <div className="min-w-0">
           <span className="text-warm-cream font-semibold text-sm block">ADINA Bot</span>
           {demoMode && (
             <span className="text-[10px] font-medium bg-terracotta/20 text-terracotta px-1.5 py-0.5 rounded">
               Demo Mode
+            </span>
+          )}
+          {gmailEmail && !demoMode && (
+            <span className="text-[10px] text-warm-gray truncate block" title={gmailEmail}>
+              {gmailEmail}
             </span>
           )}
         </div>
