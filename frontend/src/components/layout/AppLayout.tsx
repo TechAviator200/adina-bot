@@ -5,7 +5,7 @@ import ProfilePanel from './ProfilePanel'
 
 export default function AppLayout() {
   const location = useLocation()
-  const isLeadsPage = location.pathname === '/leads'
+  const showProfilePanel = location.pathname === '/leads' || location.pathname === '/inbox'
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -13,7 +13,7 @@ export default function AppLayout() {
       <main className="flex-1 overflow-y-auto p-6 min-w-0">
         <Outlet />
       </main>
-      {isLeadsPage ? <ProfilePanel /> : <AgentPanel />}
+      {showProfilePanel ? <ProfilePanel /> : <AgentPanel />}
     </div>
   )
 }

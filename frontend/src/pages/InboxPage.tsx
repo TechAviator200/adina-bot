@@ -1,10 +1,11 @@
-import { useState, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef, useContext } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { getOutreachTemplates } from '../api/inbox'
 import { getLeads, fetchLeadContacts, saveDraft } from '../api/leads'
 import { getGmailStatus, sendReply } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
+import { LeadProfileContext } from '../context/LeadProfileContext'
 import type { Lead, OutreachEmailTemplate, ProfileContact } from '../api/types'
 import Button from '../components/ui/Button'
 
@@ -20,6 +21,7 @@ function parseLeadContacts(lead: Lead): ProfileContact[] {
 export default function InboxPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const navigate = useNavigate()
+  const { setSelectedLeadId: setProfileLeadId } = useContext(LeadProfileContext)
   const [leads, setLeads] = useState<Lead[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<number | ''>('')
   const [selectedRecipient, setSelectedRecipient] = useState<string>('')
@@ -94,6 +96,12 @@ export default function InboxPage() {
       setDraftSubject('')
       setDraftBody('')
     }
+  }, [selectedLeadId])
+
+  // Keep ProfilePanel in sync with the selected lead; clear on unmount
+  useEffect(() => {
+    setProfileLeadId(selectedLeadId ? Number(selectedLeadId) : null)
+    return () => { setProfileLeadId(null) }
   }, [selectedLeadId])
 
   // Populate draft from template when template changes (only if no draft already loaded)
