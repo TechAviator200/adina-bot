@@ -1,8 +1,8 @@
 import { useState, useEffect, useCallback, useContext, useRef } from 'react'
 import {
-  getLeads, uploadLeads, draftLead, approveLead, unapproveLead, workflowSend,
-  pullLeads, updateLeadStatus, updateContactEmail, discoverCompaniesByIndustry,
-  getCompanyContacts, importCompaniesAsLeads,
+  getLeads, uploadLeads, qualifyLead, draftLead, approveLead, unapproveLead,
+  workflowSend, pullLeads, updateLeadStatus, updateContactEmail,
+  discoverCompaniesByIndustry, getCompanyContacts, importCompaniesAsLeads,
 } from '../api/leads'
 import { getGmailStatus } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
@@ -15,12 +15,11 @@ const STATUS_TABS = ['all', 'new', 'qualified', 'drafted', 'approved', 'sent']
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export default function LeadsPage() {
-  const { selectedLeadId, setSelectedLeadId } = useContext(LeadProfileContext)
+  const { selectedLeadId, setSelectedLeadId, refreshProfile } = useContext(LeadProfileContext)
 
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
   const [activeTab, setActiveTab] = useState('all')
-  const [expandedId, setExpandedId] = useState<number | null>(null)
   const [gmailConnected, setGmailConnected] = useState(false)
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set())
   const [dryRun, setDryRun] = useState(demoMode)
@@ -66,13 +65,14 @@ export default function LeadsPage() {
     try {
       const data = await getLeads()
       setLeads(data)
+      refreshProfile()
     } catch (e: unknown) {
       const msg = e instanceof Error ? e.message : 'Unknown error'
       addLog(`Failed to fetch leads: ${msg}`)
     } finally {
       setLoading(false)
     }
-  }, [addLog])
+  }, [addLog, refreshProfile])
 
   useEffect(() => { fetchLeads() }, [fetchLeads])
 
@@ -135,6 +135,20 @@ export default function LeadsPage() {
       const msg = err instanceof Error ? err.message : 'Unapprove failed'
       endRun(runId, msg, 'error')
       addToast(`Unapprove failed: ${msg}`, 'error')
+    }
+  }
+
+  async function handleQualify(id: number) {
+    const runId = startRun(`Qualify lead #${id}`)
+    try {
+      await qualifyLead(id)
+      endRun(runId, 'Qualified')
+      addToast(`Lead #${id} marked as qualified`, 'success')
+      fetchLeads()
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Qualify failed'
+      endRun(runId, msg, 'error')
+      addToast(`Qualify failed: ${msg}`, 'error')
     }
   }
 
@@ -413,6 +427,12 @@ export default function LeadsPage() {
     }
   }
 
+  async function batchQualify() {
+    await runBatch('Qualify', async (lead) => {
+      try { await qualifyLead(lead.id); return null } catch { return 'failed' }
+    }, 'new')
+  }
+
   async function batchDraft() {
     await runBatch('Draft', async (lead) => {
       try { await draftLead(lead.id); return null } catch { return 'failed' }
@@ -486,6 +506,9 @@ export default function LeadsPage() {
       {selectedIds.size > 0 && (
         <div className="flex items-center gap-2 mb-3 p-2 bg-soft-navy/70 rounded-lg border border-warm-gray/20">
           <span className="text-xs text-warm-gray mr-1">{selectedIds.size} selected</span>
+          <Button size="sm" variant="secondary" onClick={batchQualify} disabled={batchRunning}>
+            Qualify
+          </Button>
           <Button size="sm" variant="secondary" onClick={batchDraft} disabled={batchRunning}>
             Draft
           </Button>
@@ -529,14 +552,6 @@ export default function LeadsPage() {
         </div>
       )}
 
-      {/* Gmail not connected banner */}
-      {!gmailConnected && (
-        <div className="mb-3 px-3 py-2 bg-warm-gray/10 border border-warm-gray/20 rounded-lg flex items-center justify-between">
-          <span className="text-xs text-warm-gray">Gmail not connected — sending is disabled.</span>
-          <a href="/settings" className="text-xs text-terracotta hover:underline">Connect in Settings →</a>
-        </div>
-      )}
-
       {loading ? (
         <p className="text-warm-gray text-sm">Loading...</p>
       ) : filtered.length === 0 ? (
@@ -566,20 +581,22 @@ export default function LeadsPage() {
                 onClick={() => setSelectedLeadId(isProfileSelected ? null : lead.id)}
               >
                 <div className="flex items-center justify-between">
-                  <div className="flex items-center gap-3" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-3 min-w-0">
                     <input
                       type="checkbox"
                       checked={selectedIds.has(lead.id)}
                       onChange={() => toggleSelect(lead.id)}
-                      className="accent-terracotta"
+                      onClick={(e) => e.stopPropagation()}
+                      className="accent-terracotta shrink-0"
                     />
-                    <span className="text-sm font-medium">{lead.company}</span>
-                    <span className="text-xs text-warm-gray">{lead.industry}</span>
+                    <span className="text-sm font-medium truncate">{lead.company}</span>
+                    <span className="text-xs text-warm-gray shrink-0">{lead.industry}</span>
                     <select
                       value={lead.status}
                       onChange={(e) => handleStatusChange(lead.id, e.target.value)}
                       disabled={updatingStatusId === lead.id}
-                      className="bg-soft-navy border border-warm-gray/30 rounded px-2 py-0.5 text-xs text-warm-cream cursor-pointer disabled:opacity-50"
+                      onClick={(e) => e.stopPropagation()}
+                      className="bg-soft-navy border border-warm-gray/30 rounded px-2 py-0.5 text-xs text-warm-cream cursor-pointer disabled:opacity-50 shrink-0"
                     >
                       <option value="new">New</option>
                       <option value="in_progress">In Progress</option>
@@ -591,7 +608,12 @@ export default function LeadsPage() {
                       <option value="ignored">Ignored</option>
                     </select>
                   </div>
-                  <div className="flex items-center gap-1.5" onClick={(e) => e.stopPropagation()}>
+                  <div className="flex items-center gap-1.5 shrink-0" onClick={(e) => e.stopPropagation()}>
+                    {lead.status === 'new' && (
+                      <Button size="sm" variant="secondary" onClick={() => handleQualify(lead.id)}>
+                        Qualify
+                      </Button>
+                    )}
                     {lead.status === 'qualified' && (
                       <Button size="sm" variant="secondary" onClick={() => handleDraft(lead.id)}>
                         Draft
@@ -616,43 +638,8 @@ export default function LeadsPage() {
                         </Button>
                       </>
                     )}
-                    <button
-                      onClick={() => setExpandedId(expandedId === lead.id ? null : lead.id)}
-                      className="text-warm-gray hover:text-warm-cream text-xs ml-2"
-                    >
-                      {expandedId === lead.id ? 'Hide' : 'Details'}
-                    </button>
                   </div>
                 </div>
-
-                {lead.status === 'approved' && (!lead.contact_email || !gmailConnected || demoMode) && (
-                  <p className="text-xs text-warm-gray mt-1 text-right">
-                    {!lead.contact_email
-                      ? 'No contact email'
-                      : demoMode
-                      ? 'Demo mode — use dry run'
-                      : 'Gmail not connected — go to Settings'}
-                  </p>
-                )}
-
-                {expandedId === lead.id && (
-                  <div
-                    className="mt-3 pt-3 border-t border-warm-gray/10 text-xs space-y-1"
-                    onClick={(e) => e.stopPropagation()}
-                  >
-                    {lead.contact_email && <p><span className="text-warm-gray">Email:</span> {lead.contact_email}</p>}
-                    {lead.phone && <p><span className="text-warm-gray">Phone:</span> {lead.phone}</p>}
-                    {lead.location && <p><span className="text-warm-gray">Location:</span> {lead.location}</p>}
-                    {lead.employees && <p><span className="text-warm-gray">Employees:</span> {lead.employees}</p>}
-                    {lead.stage && <p><span className="text-warm-gray">Stage:</span> {lead.stage}</p>}
-                    {lead.email_subject && (
-                      <div className="mt-2 bg-warm-cream/10 rounded p-2">
-                        <p className="font-medium">{lead.email_subject}</p>
-                        <p className="text-warm-gray mt-1 whitespace-pre-wrap">{lead.email_body}</p>
-                      </div>
-                    )}
-                  </div>
-                )}
               </div>
             )
           })}

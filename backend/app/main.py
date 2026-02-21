@@ -64,6 +64,7 @@ from app.schemas import (
     ApprovalResponse,
     ReplyDraftRequest,
     ReplyDraftResponse,
+    SendReplyRequest,
     GmailConnectResponse,
     GmailConnectRequest,
     GmailSendResponse,
@@ -1209,6 +1210,8 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
         status=lead.status,
         source=lead.source,
         industry=lead.industry,
+        employees=lead.employees,
+        stage=lead.stage,
         contact_name=lead.contact_name,
         contact_email=lead.contact_email,
     )
@@ -1377,6 +1380,19 @@ def unapprove_lead(lead_id: int, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail="Lead not found")
 
     lead.status = "drafted"
+    db.commit()
+
+    return ApprovalResponse(lead_id=lead.id, status=lead.status)
+
+
+@app.post("/api/leads/{lead_id}/qualify", response_model=ApprovalResponse)
+def qualify_lead(lead_id: int, db: Session = Depends(get_db)):
+    """Mark a lead as qualified (no scoring required)."""
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    lead.status = "qualified"
     db.commit()
 
     return ApprovalResponse(lead_id=lead.id, status=lead.status)
@@ -1795,6 +1811,70 @@ def send_batch_emails(request: BatchSendRequest, db: Session = Depends(get_db)):
         skipped=skipped,
         errors=errors,
     )
+
+
+@app.post("/api/gmail/send_reply", response_model=GmailSendResponse)
+def send_reply_email(request: SendReplyRequest, db: Session = Depends(get_db)):
+    """
+    Send a drafted reply email via Gmail OAuth.
+
+    Used by the Inbox page to send a classified/drafted reply to a specific recipient.
+    Does not require the lead to be in 'approved' status.
+    """
+    if gmail is None:
+        return GmailSendResponse(
+            success=False, lead_id=request.lead_id,
+            error="Gmail service not available",
+        )
+
+    if settings.demo_mode:
+        raise HTTPException(status_code=403, detail="Demo mode: sending disabled")
+
+    if not gmail.is_connected():
+        return GmailSendResponse(
+            success=False, lead_id=request.lead_id,
+            error="Gmail not connected. Connect in Settings first.",
+        )
+
+    daily_count = get_daily_email_count(db)
+    if daily_count >= DAILY_SEND_LIMIT:
+        return GmailSendResponse(
+            success=False, lead_id=request.lead_id,
+            error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached.",
+        )
+
+    lead = db.query(Lead).filter(Lead.id == request.lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    result = gmail.send_email(
+        to=request.to_email,
+        subject=request.subject,
+        body=request.body,
+    )
+
+    if result["success"]:
+        sent_email = SentEmail(
+            lead_id=lead.id,
+            to_email=request.to_email,
+            subject=request.subject,
+            body=request.body,
+            gmail_message_id=result["message_id"],
+            sent_date=date.today(),
+        )
+        db.add(sent_email)
+        increment_daily_email_count(db)
+        db.commit()
+
+        return GmailSendResponse(
+            success=True, lead_id=request.lead_id,
+            message_id=result["message_id"],
+        )
+    else:
+        return GmailSendResponse(
+            success=False, lead_id=request.lead_id,
+            error=result["error"],
+        )
 
 
 @app.get("/api/gmail/sent", response_model=List[SentEmailRead])

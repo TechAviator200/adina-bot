@@ -96,6 +96,13 @@ class ApprovalResponse(BaseModel):
     status: str
 
 
+class SendReplyRequest(BaseModel):
+    lead_id: int
+    to_email: str
+    subject: str
+    body: str
+
+
 class ReplyDraftRequest(BaseModel):
     lead_id: int
     inbound_text: str
@@ -284,6 +291,8 @@ class LeadProfile(BaseModel):
     status: str
     source: Optional[str] = None
     industry: str
+    employees: Optional[int] = None
+    stage: Optional[str] = None
     contact_name: Optional[str] = None
     contact_email: Optional[str] = None
 

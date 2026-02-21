@@ -30,3 +30,18 @@ export async function sendEmail(leadId: number): Promise<GmailSendResponse> {
   const { data } = await apiClient.post<GmailSendResponse>(`/api/gmail/send/${leadId}`)
   return data
 }
+
+export async function sendReply(
+  leadId: number,
+  toEmail: string,
+  subject: string,
+  body: string,
+): Promise<GmailSendResponse> {
+  const { data } = await apiClient.post<GmailSendResponse>('/api/gmail/send_reply', {
+    lead_id: leadId,
+    to_email: toEmail,
+    subject,
+    body,
+  })
+  return data
+}

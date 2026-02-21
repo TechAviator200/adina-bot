@@ -43,6 +43,8 @@ export interface LeadProfile {
   status: string
   source: string | null
   industry: string
+  employees: number | null
+  stage: string | null
   contact_name: string | null
   contact_email: string | null
 }
