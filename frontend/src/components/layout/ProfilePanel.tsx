@@ -13,15 +13,6 @@ const STATUS_COLORS: Record<string, string> = {
   ignored: 'bg-warm-gray/10 text-warm-gray/60',
 }
 
-const QUALITY_COLORS: Record<string, string> = {
-  'Hot Lead': 'bg-terracotta/20 text-terracotta border border-terracotta/30',
-  'Strong Fit': 'bg-green-500/20 text-green-400 border border-green-500/30',
-  'Good Fit': 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
-  'Possible Fit': 'bg-yellow-500/20 text-yellow-400 border border-yellow-500/30',
-  'Possible Fit — Not Hiring Now': 'bg-yellow-500/10 text-yellow-500/70 border border-yellow-500/20',
-  'Weak Fit': 'bg-warm-gray/20 text-warm-gray border border-warm-gray/20',
-  'Poor Fit': 'bg-red-500/15 text-red-400/80 border border-red-500/20',
-}
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
@@ -110,16 +101,6 @@ export default function ProfilePanel() {
                   <span className="text-xs text-warm-gray">{profile.industry}</span>
                 )}
               </div>
-              {profile.quality_label && (
-                <div className="mt-2">
-                  <span className={`text-[10px] px-2 py-0.5 rounded-full font-semibold ${QUALITY_COLORS[profile.quality_label] ?? 'bg-warm-gray/20 text-warm-gray'}`}>
-                    {profile.quality_label}
-                  </span>
-                  {profile.score !== undefined && (
-                    <span className="text-[10px] text-warm-gray ml-2">Score: {Math.round(profile.score)}/100</span>
-                  )}
-                </div>
-              )}
             </div>
 
             <div className="border-t border-warm-gray/10" />
@@ -283,23 +264,17 @@ export default function ProfilePanel() {
                 </div>
               </div>
             ) : (
-              <div className="text-center py-3 space-y-2">
-                <p className="text-xs text-warm-gray/60">No contacts stored</p>
-                {profile.website ? (
-                  <>
-                    <button
-                      onClick={handleFetchContacts}
-                      disabled={fetchingContacts}
-                      className="text-xs text-terracotta hover:underline disabled:opacity-50 transition-colors"
-                    >
-                      {fetchingContacts ? 'Looking up contacts...' : 'Find Contacts via Hunter.io'}
-                    </button>
-                    {contactsError && (
-                      <p className="text-[11px] text-warm-gray">{contactsError}</p>
-                    )}
-                  </>
-                ) : (
-                  <p className="text-[11px] text-warm-gray">Add a website to enable contact lookup</p>
+              <div className="py-3 space-y-2">
+                <button
+                  onClick={handleFetchContacts}
+                  disabled={fetchingContacts || !profile.website}
+                  className="w-full bg-terracotta hover:bg-terracotta/90 disabled:opacity-40 text-warm-cream text-xs font-medium py-2 px-4 rounded-full transition-colors"
+                  title={!profile.website ? 'Add a website to enable contact lookup' : undefined}
+                >
+                  {fetchingContacts ? 'Looking up contacts...' : 'Find Contacts'}
+                </button>
+                {contactsError && (
+                  <p className="text-[11px] text-warm-gray text-center">{contactsError}</p>
                 )}
               </div>
             )}
