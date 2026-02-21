@@ -6,9 +6,11 @@ import type {
   ScoreResponse,
   DraftResponse,
   ApprovalResponse,
+  GmailSendResponse,
   WorkflowSendResponse,
   ContactEmailResponse,
   LeadStatusResponse,
+  SentEmail,
   CompanyDiscoverResponse,
   CompanyContactsResponse,
   ImportCompanyRequest,
@@ -59,13 +61,31 @@ export async function fetchLeadContacts(id: number): Promise<LeadProfile> {
   return data
 }
 
-export async function approveLead(id: number): Promise<ApprovalResponse> {
-  const { data } = await apiClient.post<ApprovalResponse>(`/api/leads/${id}/approve`)
+export async function approveLead(id: number): Promise<GmailSendResponse> {
+  const { data } = await apiClient.post<GmailSendResponse>(`/api/leads/${id}/approve`)
   return data
 }
 
 export async function unapproveLead(id: number): Promise<ApprovalResponse> {
   const { data } = await apiClient.post<ApprovalResponse>(`/api/leads/${id}/unapprove`)
+  return data
+}
+
+export async function saveDraft(
+  id: number,
+  subject: string,
+  body: string,
+  toEmail: string,
+): Promise<{ lead_id: number; status: string }> {
+  const { data } = await apiClient.post<{ lead_id: number; status: string }>(
+    `/api/leads/${id}/save_draft`,
+    { subject, body, to_email: toEmail },
+  )
+  return data
+}
+
+export async function getLeadSentEmail(id: number): Promise<SentEmail> {
+  const { data } = await apiClient.get<SentEmail>(`/api/leads/${id}/sent_email`)
   return data
 }
 

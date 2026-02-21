@@ -1,8 +1,8 @@
 import { useContext, useEffect, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { LeadProfileContext } from '../../context/LeadProfileContext'
-import { getLeadProfile, fetchLeadContacts } from '../../api/leads'
-import type { LeadProfile } from '../../api/types'
+import { getLeadProfile, fetchLeadContacts, getLeadSentEmail } from '../../api/leads'
+import type { LeadProfile, SentEmail } from '../../api/types'
 
 const STATUS_COLORS: Record<string, string> = {
   new: 'bg-warm-gray/20 text-warm-gray',
@@ -38,17 +38,26 @@ export default function ProfilePanel() {
   const [loading, setLoading] = useState(false)
   const [fetchingContacts, setFetchingContacts] = useState(false)
   const [contactsError, setContactsError] = useState<string | null>(null)
+  const [sentEmail, setSentEmail] = useState<SentEmail | null>(null)
   const navigate = useNavigate()
 
   useEffect(() => {
     if (!selectedLeadId) {
       setProfile(null)
       setContactsError(null)
+      setSentEmail(null)
       return
     }
     setLoading(true)
     getLeadProfile(selectedLeadId)
-      .then(setProfile)
+      .then((p) => {
+        setProfile(p)
+        if (p.status === 'sent') {
+          getLeadSentEmail(selectedLeadId).then(setSentEmail).catch(() => setSentEmail(null))
+        } else {
+          setSentEmail(null)
+        }
+      })
       .catch(() => setProfile(null))
       .finally(() => setLoading(false))
   }, [selectedLeadId, refreshKey])
@@ -293,6 +302,35 @@ export default function ProfilePanel() {
                   <p className="text-[11px] text-warm-gray">Add a website to enable contact lookup</p>
                 )}
               </div>
+            )}
+
+            {/* Sent Email */}
+            {sentEmail && (
+              <>
+                <div className="border-t border-warm-gray/10" />
+                <div>
+                  <p className="text-[10px] uppercase tracking-wide text-warm-gray mb-2">Sent Email</p>
+                  <div className="bg-warm-cream/5 border border-warm-gray/10 rounded-lg p-3 space-y-2">
+                    <div>
+                      <p className="text-[10px] text-warm-gray">To</p>
+                      <p className="text-xs text-warm-cream">{sentEmail.to_email}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-warm-gray">Subject</p>
+                      <p className="text-xs text-warm-cream font-medium">{sentEmail.subject}</p>
+                    </div>
+                    <div>
+                      <p className="text-[10px] text-warm-gray mb-1">Body</p>
+                      <p className="text-[11px] text-warm-cream/70 leading-relaxed whitespace-pre-wrap line-clamp-6">
+                        {sentEmail.body}
+                      </p>
+                    </div>
+                    <p className="text-[10px] text-warm-gray/50">
+                      {new Date(sentEmail.sent_at).toLocaleString()}
+                    </p>
+                  </div>
+                </div>
+              </>
             )}
           </div>
         )}

@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useSearchParams, useNavigate } from 'react-router-dom'
 import { getOutreachTemplates } from '../api/inbox'
-import { getLeads, fetchLeadContacts } from '../api/leads'
+import { getLeads, fetchLeadContacts, saveDraft } from '../api/leads'
 import { getGmailStatus, sendReply } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
@@ -19,6 +19,7 @@ function parseLeadContacts(lead: Lead): ProfileContact[] {
 
 export default function InboxPage() {
   const [searchParams, setSearchParams] = useSearchParams()
+  const navigate = useNavigate()
   const [leads, setLeads] = useState<Lead[]>([])
   const [selectedLeadId, setSelectedLeadId] = useState<number | ''>('')
   const [selectedRecipient, setSelectedRecipient] = useState<string>('')
@@ -28,11 +29,14 @@ export default function InboxPage() {
   const [draftBody, setDraftBody] = useState('')
   const [gmailConnected, setGmailConnected] = useState(false)
   const [sendingReply, setSendingReply] = useState(false)
+  const [savingDraft, setSavingDraft] = useState(false)
   const [fetchingContacts, setFetchingContacts] = useState(false)
   const { addLog } = useAgentLog()
   const { addToast } = useToast()
   // Holds an email to pre-fill after a lead selection resets the recipient field
   const pendingEmailRef = useRef<string | null>(null)
+  // Holds saved draft subject/body to pre-fill (from lead.email_subject / email_body)
+  const pendingDraftRef = useRef<{ subject: string; body: string } | null>(null)
 
   useEffect(() => {
     Promise.all([
@@ -44,15 +48,26 @@ export default function InboxPage() {
       setTemplates(fetchedTemplates)
       setGmailConnected(gmailStatus.connected)
 
-      // Pre-fill from URL params (e.g. navigated from ProfilePanel email click)
+      // Pre-fill from URL params (e.g. navigated from Leads Draft button or ProfilePanel)
       const paramLeadId = searchParams.get('leadId')
       const paramEmail = searchParams.get('email')
       if (paramLeadId) {
         const id = Number(paramLeadId)
-        const leadExists = fetchedLeads.some((l) => l.id === id)
-        if (leadExists) {
+        const lead = fetchedLeads.find((l) => l.id === id)
+        if (lead) {
           // Store email in ref so the selectedLeadId reset effect can pick it up
-          if (paramEmail) pendingEmailRef.current = decodeURIComponent(paramEmail)
+          if (paramEmail) {
+            pendingEmailRef.current = decodeURIComponent(paramEmail)
+          } else if (lead.contact_email) {
+            pendingEmailRef.current = lead.contact_email
+          }
+          // If lead has a saved draft, pre-load it
+          if (lead.email_subject || lead.email_body) {
+            pendingDraftRef.current = {
+              subject: lead.email_subject ?? '',
+              body: lead.email_body ?? '',
+            }
+          }
           setSelectedLeadId(id)
         }
       }
@@ -62,21 +77,33 @@ export default function InboxPage() {
   }, [])
 
   // Reset recipient and draft when lead changes.
-  // If a pre-fill email is pending (from ProfilePanel click), apply it instead of clearing.
+  // Consume pending refs from navigation (email pre-fill and saved draft pre-load).
   useEffect(() => {
-    const pending = pendingEmailRef.current
+    const pendingEmail = pendingEmailRef.current
+    const pendingDraft = pendingDraftRef.current
     pendingEmailRef.current = null
-    setSelectedRecipient(pending ?? '')
+    pendingDraftRef.current = null
+
+    setSelectedRecipient(pendingEmail ?? '')
     setSelectedTemplateId('')
-    setDraftSubject('')
-    setDraftBody('')
+
+    if (pendingDraft) {
+      setDraftSubject(pendingDraft.subject)
+      setDraftBody(pendingDraft.body)
+    } else {
+      setDraftSubject('')
+      setDraftBody('')
+    }
   }, [selectedLeadId])
 
-  // Populate draft from template when template changes
+  // Populate draft from template when template changes (only if no draft already loaded)
   useEffect(() => {
+    if (!selectedTemplateId) return
     const t = templates.find((t) => t.id === selectedTemplateId)
-    setDraftSubject(t?.subject ?? '')
-    setDraftBody(t?.body ?? '')
+    if (t) {
+      setDraftSubject(t.subject)
+      setDraftBody(t.body)
+    }
   }, [selectedTemplateId, templates])
 
   const selectedLead = leads.find((l) => l.id === Number(selectedLeadId)) ?? null
@@ -92,8 +119,14 @@ export default function InboxPage() {
     (hasSingleFallback ? (selectedLead?.contact_email ?? '') : '')
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null
+  // Show compose area when a template is selected OR when a saved draft is loaded
+  const showCompose = Boolean(selectedTemplate || draftSubject || draftBody)
+
   const canSend = Boolean(
-    selectedLeadId && recipientEmail && selectedTemplateId && draftBody && gmailConnected && !sendingReply
+    selectedLeadId && recipientEmail && draftBody && gmailConnected && !sendingReply
+  )
+  const canSaveDraft = Boolean(
+    selectedLeadId && recipientEmail && draftBody && !savingDraft
   )
 
   // Fetch contacts via Hunter.io and update this lead in local state
@@ -130,20 +163,37 @@ export default function InboxPage() {
     try {
       const resp = await sendReply(Number(selectedLeadId), recipientEmail, draftSubject, draftBody)
       if (resp.success) {
-        addToast('Reply sent via Gmail', 'success')
-        addLog(`Reply sent to ${recipientEmail} for lead #${selectedLeadId}`)
+        addToast('Email sent via Gmail', 'success')
+        addLog(`Email sent to ${recipientEmail} for lead #${selectedLeadId}`)
         setSelectedTemplateId('')
         setDraftSubject('')
         setDraftBody('')
         setSelectedRecipient('')
+        setSelectedLeadId('')
       } else {
         addToast(`Send failed: ${resp.error || 'Unknown error'}`, 'error')
       }
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Send failed'
-      addToast(`Send reply failed: ${msg}`, 'error')
+      addToast(`Send failed: ${msg}`, 'error')
     } finally {
       setSendingReply(false)
+    }
+  }
+
+  async function handleSaveDraft() {
+    if (!canSaveDraft || !selectedLeadId || !recipientEmail) return
+    setSavingDraft(true)
+    try {
+      await saveDraft(Number(selectedLeadId), draftSubject, draftBody, recipientEmail)
+      addToast('Draft saved — lead moved to Drafted', 'success')
+      addLog(`Draft saved for lead #${selectedLeadId} → ${recipientEmail}`)
+      navigate('/leads')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Save failed'
+      addToast(`Save draft failed: ${msg}`, 'error')
+    } finally {
+      setSavingDraft(false)
     }
   }
 
@@ -230,7 +280,12 @@ export default function InboxPage() {
         {/* Outreach Template */}
         {selectedLeadId && (
           <div>
-            <label className="block text-xs text-warm-gray mb-1">Outreach Template</label>
+            <label className="block text-xs text-warm-gray mb-1">
+              Outreach Template
+              {(draftSubject || draftBody) && !selectedTemplateId && (
+                <span className="ml-2 text-terracotta/70 normal-case font-normal">(saved draft loaded)</span>
+              )}
+            </label>
             <select
               value={selectedTemplateId}
               onChange={(e) => setSelectedTemplateId(e.target.value)}
@@ -246,8 +301,8 @@ export default function InboxPage() {
           </div>
         )}
 
-        {/* Compose area — editable like a native email window */}
-        {selectedTemplate && (
+        {/* Compose area */}
+        {showCompose && (
           <div className="bg-soft-navy border border-warm-gray/20 rounded-lg overflow-hidden">
             {/* Subject row */}
             <div className="flex items-center border-b border-warm-gray/15 px-4 py-2.5">
@@ -284,7 +339,15 @@ export default function InboxPage() {
                 onClick={handleSendReply}
                 disabled={!canSend}
               >
-                {sendingReply ? 'Sending...' : 'Reply'}
+                {sendingReply ? 'Sending...' : 'Send'}
+              </Button>
+              <Button
+                size="sm"
+                variant="secondary"
+                onClick={handleSaveDraft}
+                disabled={!canSaveDraft}
+              >
+                {savingDraft ? 'Saving...' : 'Save Draft'}
               </Button>
               {!gmailConnected && (
                 <span className="text-xs text-warm-gray">Gmail not connected</span>

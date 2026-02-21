@@ -103,6 +103,12 @@ class SendReplyRequest(BaseModel):
     body: str
 
 
+class SaveDraftRequest(BaseModel):
+    subject: str
+    body: str
+    to_email: str
+
+
 class ReplyDraftRequest(BaseModel):
     lead_id: int
     inbound_text: str

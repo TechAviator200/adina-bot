@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useContext, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import {
   getLeads, uploadLeads, qualifyLead, draftLead, approveLead, unapproveLead,
   workflowSend, pullLeads, updateLeadStatus, updateContactEmail,
@@ -16,6 +17,7 @@ const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export default function LeadsPage() {
   const { selectedLeadId, setSelectedLeadId, refreshProfile } = useContext(LeadProfileContext)
+  const navigate = useNavigate()
 
   const [leads, setLeads] = useState<Lead[]>([])
   const [loading, setLoading] = useState(true)
@@ -96,26 +98,31 @@ export default function LeadsPage() {
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
 
-  async function handleDraft(id: number) {
-    const runId = startRun(`Draft lead #${id}`)
-    try {
-      const result = await draftLead(id)
-      endRun(runId, `"${result.subject}"`)
-      addToast(`Draft created for lead #${id}`, 'success')
-      fetchLeads()
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Draft failed'
-      endRun(runId, msg, 'error')
-      addToast(`Draft failed: ${msg}`, 'error')
-    }
+  // Navigate to Inbox with lead pre-selected and best contact pre-filled
+  function navigateToInbox(lead: Lead) {
+    const contacts = parseLeadContacts(lead)
+    const emailContacts = contacts.filter((c) => c.email)
+    const bestEmail = emailContacts[0]?.email ?? lead.contact_email ?? ''
+    const params = new URLSearchParams({ leadId: String(lead.id) })
+    if (bestEmail) params.set('email', bestEmail)
+    navigate(`/inbox?${params.toString()}`)
   }
 
   async function handleApprove(id: number) {
-    const runId = startRun(`Approve lead #${id}`)
+    if (!gmailConnected) {
+      addToast('Gmail not connected. Go to Settings to connect.', 'error')
+      return
+    }
+    const runId = startRun(`Approve & Send lead #${id}`)
     try {
-      await approveLead(id)
-      endRun(runId, 'Approved')
-      addToast(`Lead #${id} approved`, 'success')
+      const result = await approveLead(id)
+      if (result.success) {
+        endRun(runId, 'Sent')
+        addToast(`Email sent for lead #${id}`, 'success')
+      } else {
+        endRun(runId, result.error || 'Send failed', 'error')
+        addToast(result.error || 'Send failed', 'error')
+      }
       fetchLeads()
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Approve failed'
@@ -615,14 +622,19 @@ export default function LeadsPage() {
                       </Button>
                     )}
                     {lead.status === 'qualified' && (
-                      <Button size="sm" variant="secondary" onClick={() => handleDraft(lead.id)}>
+                      <Button size="sm" variant="secondary" onClick={() => navigateToInbox(lead)}>
                         Draft
                       </Button>
                     )}
                     {lead.status === 'drafted' && (
-                      <Button size="sm" onClick={() => handleApprove(lead.id)}>
-                        Approve
-                      </Button>
+                      <>
+                        <Button size="sm" variant="secondary" onClick={() => navigateToInbox(lead)}>
+                          Edit Draft
+                        </Button>
+                        <Button size="sm" onClick={() => handleApprove(lead.id)}>
+                          Approve & Send
+                        </Button>
+                      </>
                     )}
                     {lead.status === 'approved' && (
                       <>

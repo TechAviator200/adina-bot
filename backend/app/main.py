@@ -65,6 +65,7 @@ from app.schemas import (
     ReplyDraftRequest,
     ReplyDraftResponse,
     SendReplyRequest,
+    SaveDraftRequest,
     GmailConnectResponse,
     GmailConnectRequest,
     GmailSendResponse,
@@ -1390,17 +1391,69 @@ def get_qualified_leads(db: Session = Depends(get_db)):
     return leads
 
 
-@app.post("/api/leads/{lead_id}/approve", response_model=ApprovalResponse)
+@app.post("/api/leads/{lead_id}/approve", response_model=GmailSendResponse)
 def approve_lead(lead_id: int, db: Session = Depends(get_db)):
-    """Set lead status to 'approved'."""
+    """
+    Approve a drafted lead — sends the saved draft via Gmail and marks as 'sent'.
+
+    Requires the lead to have email_subject, email_body, and contact_email saved
+    (set via the save_draft endpoint from the Inbox page).
+    """
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
-    lead.status = "approved"
-    db.commit()
+    if not lead.email_subject or not lead.email_body or not lead.contact_email:
+        return GmailSendResponse(
+            success=False, lead_id=lead_id,
+            error="No saved draft found. Open this lead in Inbox to compose and save a draft first.",
+        )
 
-    return ApprovalResponse(lead_id=lead.id, status=lead.status)
+    if gmail is None or not gmail.is_connected():
+        return GmailSendResponse(
+            success=False, lead_id=lead_id,
+            error="Gmail not connected. Connect in Settings first.",
+        )
+
+    if settings.demo_mode:
+        return GmailSendResponse(
+            success=False, lead_id=lead_id,
+            error="Demo mode: sending disabled.",
+        )
+
+    daily_count = get_daily_email_count(db)
+    if daily_count >= DAILY_SEND_LIMIT:
+        return GmailSendResponse(
+            success=False, lead_id=lead_id,
+            error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached.",
+        )
+
+    result = gmail.send_email(
+        to=lead.contact_email,
+        subject=lead.email_subject,
+        body=lead.email_body,
+    )
+
+    if result["success"]:
+        lead.status = "sent"
+        sent_email = SentEmail(
+            lead_id=lead.id,
+            to_email=lead.contact_email,
+            subject=lead.email_subject,
+            body=lead.email_body,
+            gmail_message_id=result.get("message_id"),
+            sent_date=date.today(),
+        )
+        db.add(sent_email)
+        increment_daily_email_count(db)
+        db.commit()
+
+    return GmailSendResponse(
+        success=result["success"],
+        lead_id=lead_id,
+        message_id=result.get("message_id"),
+        error=result.get("error"),
+    )
 
 
 @app.post("/api/leads/{lead_id}/unapprove", response_model=ApprovalResponse)
@@ -1427,6 +1480,42 @@ def qualify_lead(lead_id: int, db: Session = Depends(get_db)):
     db.commit()
 
     return ApprovalResponse(lead_id=lead.id, status=lead.status)
+
+
+@app.post("/api/leads/{lead_id}/save_draft")
+def save_lead_draft(lead_id: int, request: SaveDraftRequest, db: Session = Depends(get_db)):
+    """
+    Save a composed email draft to the lead without sending.
+
+    - Saves subject, body, and recipient email to the lead record
+    - Sets lead status to 'drafted'
+    - Called from the Inbox page when user clicks 'Save Draft'
+    """
+    lead = db.query(Lead).filter(Lead.id == lead_id).first()
+    if not lead:
+        raise HTTPException(status_code=404, detail="Lead not found")
+
+    lead.email_subject = request.subject
+    lead.email_body = request.body
+    lead.contact_email = request.to_email
+    lead.status = "drafted"
+    db.commit()
+
+    return {"lead_id": lead_id, "status": "drafted"}
+
+
+@app.get("/api/leads/{lead_id}/sent_email", response_model=SentEmailRead)
+def get_lead_sent_email(lead_id: int, db: Session = Depends(get_db)):
+    """Return the most recent sent email for a lead."""
+    sent = (
+        db.query(SentEmail)
+        .filter(SentEmail.lead_id == lead_id)
+        .order_by(SentEmail.sent_at.desc())
+        .first()
+    )
+    if not sent:
+        raise HTTPException(status_code=404, detail="No sent email found for this lead")
+    return sent
 
 
 @app.post("/api/leads/{lead_id}/fetch_contacts", response_model=LeadProfile)
@@ -1998,6 +2087,8 @@ def send_reply_email(request: SendReplyRequest, db: Session = Depends(get_db)):
     )
 
     if result["success"]:
+        lead.status = "sent"
+        lead.contact_email = request.to_email
         sent_email = SentEmail(
             lead_id=lead.id,
             to_email=request.to_email,
