@@ -6,7 +6,6 @@ import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
 import type { Lead, OutreachEmailTemplate, ProfileContact } from '../api/types'
 import Button from '../components/ui/Button'
-import Card from '../components/ui/Card'
 
 function parseLeadContacts(lead: Lead): ProfileContact[] {
   if (!lead.contacts_json) return []
@@ -25,7 +24,6 @@ export default function InboxPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [draftSubject, setDraftSubject] = useState('')
   const [draftBody, setDraftBody] = useState('')
-  const [isReviewing, setIsReviewing] = useState(false)
   const [gmailConnected, setGmailConnected] = useState(false)
   const [sendingReply, setSendingReply] = useState(false)
   const { addLog } = useAgentLog()
@@ -43,7 +41,6 @@ export default function InboxPage() {
     setSelectedTemplateId('')
     setDraftSubject('')
     setDraftBody('')
-    setIsReviewing(false)
   }, [selectedLeadId])
 
   // Populate draft from template when template changes
@@ -51,7 +48,6 @@ export default function InboxPage() {
     const t = templates.find((t) => t.id === selectedTemplateId)
     setDraftSubject(t?.subject ?? '')
     setDraftBody(t?.body ?? '')
-    setIsReviewing(false)
   }, [selectedTemplateId, templates])
 
   const selectedLead = leads.find((l) => l.id === Number(selectedLeadId)) ?? null
@@ -81,7 +77,6 @@ export default function InboxPage() {
         setSelectedTemplateId('')
         setDraftSubject('')
         setDraftBody('')
-        setIsReviewing(false)
         setSelectedRecipient('')
       } else {
         addToast(`Send failed: ${resp.error || 'Unknown error'}`, 'error')
@@ -186,43 +181,19 @@ export default function InboxPage() {
           </div>
         )}
 
-        {/* Draft preview / edit */}
+        {/* Draft preview */}
         {selectedTemplate && (
-          <Card>
+          <div className="bg-soft-navy border border-warm-gray/20 rounded-lg p-4">
             <div className="mb-3">
               <span className="text-xs text-warm-gray block mb-1">Subject</span>
-              {isReviewing ? (
-                <input
-                  value={draftSubject}
-                  onChange={(e) => setDraftSubject(e.target.value)}
-                  className="w-full bg-soft-navy border border-warm-gray/30 rounded px-3 py-1.5 text-sm text-warm-cream"
-                />
-              ) : (
-                <p className="text-sm text-warm-cream font-medium">{draftSubject}</p>
-              )}
+              <p className="text-sm text-warm-cream font-medium">{draftSubject}</p>
             </div>
             <div>
               <span className="text-xs text-warm-gray block mb-1">Body</span>
-              {isReviewing ? (
-                <textarea
-                  value={draftBody}
-                  onChange={(e) => setDraftBody(e.target.value)}
-                  rows={10}
-                  className="w-full bg-soft-navy border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream resize-none"
-                />
-              ) : (
-                <p className="text-sm whitespace-pre-wrap text-warm-cream">{draftBody}</p>
-              )}
+              <p className="text-sm whitespace-pre-wrap text-warm-cream/90 leading-relaxed">{draftBody}</p>
             </div>
 
             <div className="mt-4 pt-4 border-t border-warm-gray/10 flex items-center gap-3 flex-wrap">
-              <Button
-                size="sm"
-                variant="secondary"
-                onClick={() => setIsReviewing(!isReviewing)}
-              >
-                {isReviewing ? 'Done Editing' : 'Review Draft'}
-              </Button>
               <Button
                 size="sm"
                 onClick={handleSendReply}
@@ -237,7 +208,7 @@ export default function InboxPage() {
                 <span className="text-xs text-warm-gray">Select a recipient above</span>
               )}
             </div>
-          </Card>
+          </div>
         )}
       </div>
     </div>
