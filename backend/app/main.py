@@ -39,8 +39,10 @@ import io
 import json
 import logging
 import os
+import re
 from datetime import date, datetime, timezone, timedelta
 from pathlib import Path
+from typing import Optional as _Optional
 
 from fastapi import FastAPI, Depends, UploadFile, File, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -137,6 +139,7 @@ except ImportError:
 
 # Response playbook for templates
 from app.utils.response_playbook import RESPONSE_PLAYBOOK
+from app.utils.knowledge_pack import KNOWLEDGE_PACK
 
 logger = logging.getLogger(__name__)
 
@@ -205,12 +208,110 @@ def _send_email_for_user(db, user_key: str, to: str, subject: str, body: str) ->
     return {"success": False, "error": "Gmail not connected. Connect in Settings first."}
 
 
+# ---------------------------------------------------------------------------
+# Description resolution helpers (priority chain for "About" section)
+# ---------------------------------------------------------------------------
+
+def _scrape_website_description(url: str) -> _Optional[str]:
+    """
+    Scrape a company's meta description or H1 from their website.
+    Returns None on failure or if the result is too short to be useful.
+    Uses a short timeout (5s) so it doesn't block the profile endpoint.
+    """
+    try:
+        import requests as _requests
+        if not url.startswith("http"):
+            url = f"https://{url}"
+        resp = _requests.get(
+            url, timeout=5,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; AdinaBot/1.0)"},
+            allow_redirects=True,
+        )
+        if resp.status_code != 200:
+            return None
+        html = resp.text
+
+        # Try <meta name="description" content="..."> (both attribute orderings)
+        m = re.search(
+            r'<meta\s+name=["\']description["\']\s+content=["\']([^"\']{20,500})["\']',
+            html, re.IGNORECASE
+        )
+        if not m:
+            m = re.search(
+                r'<meta\s+content=["\']([^"\']{20,500})["\']\s+name=["\']description["\']',
+                html, re.IGNORECASE
+            )
+        if m:
+            return m.group(1).strip()[:400]
+
+        # Fall back to first <h1>
+        h = re.search(r'<h1[^>]*>([^<]{5,200})</h1>', html, re.IGNORECASE)
+        if h:
+            text = re.sub(r'\s+', ' ', h.group(1)).strip()
+            if len(text) >= 10:
+                return text[:200]
+
+        return None
+    except Exception:
+        return None
+
+
+def _get_icp_description(industry: _Optional[str]) -> _Optional[str]:
+    """
+    Return a context-aware ICP description from knowledge_pack.
+    Tries to match the lead's industry to an ideal_customer entry; falls back
+    to the ADINA one_liner.
+    """
+    one_liner = KNOWLEDGE_PACK.get("one_liner", "")
+    ideal_customers = KNOWLEDGE_PACK.get("ideal_customers", [])
+
+    if industry:
+        industry_lower = industry.lower()
+        for ic in ideal_customers:
+            if industry_lower in ic.lower():
+                return ic
+
+    return one_liner or None
+
+
+def _resolve_description(lead, db) -> _Optional[str]:
+    """
+    Priority chain for the "About" section:
+    1. lead.notes (internal CSV notes — source of truth)
+    2. lead.company_description (cached scrape or previously stored external description)
+    3. Live website scrape (lazy; result cached in company_description on first success)
+    4. ICP description from knowledge_pack (industry-matched ideal customer profile)
+    """
+    # 1. Internal notes are the operator's source of truth
+    if lead.notes and lead.notes.strip():
+        return lead.notes.strip()
+
+    # 2. Previously cached external description
+    if lead.company_description and lead.company_description.strip():
+        return lead.company_description.strip()
+
+    # 3. Live scrape (cached on success)
+    if lead.website:
+        scraped = _scrape_website_description(lead.website)
+        if scraped:
+            lead.company_description = scraped
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+            return scraped
+
+    # 4. ICP fallback from knowledge_pack
+    return _get_icp_description(lead.industry)
+
+
 def run_db_migrations(engine) -> None:
     """Add new columns to existing tables if they don't exist (safe to run repeatedly)."""
     migrations = [
         "ALTER TABLE leads ADD COLUMN phone VARCHAR",
         "ALTER TABLE leads ADD COLUMN linkedin_url VARCHAR",
         "ALTER TABLE leads ADD COLUMN contacts_json TEXT",
+        "ALTER TABLE leads ADD COLUMN company_description TEXT",
     ]
     with engine.connect() as conn:
         for stmt in migrations:
@@ -1274,13 +1375,16 @@ def import_companies_as_leads(
             primary_email = primary_email or first.get("email")
 
         # Create lead
+        # notes = internal operator notes (CSV flagging signals — source of truth for scoring)
+        # company_description = external description from discovery source (SerpAPI/Google Maps)
         lead = Lead(
             company=company.name,
             industry=company.industry,
             location=company.location,
             employees=employees,
             website=company.website_url or company.domain,
-            notes=company.description,
+            notes=None,
+            company_description=company.description,
             contact_name=primary_name,
             contact_role=primary_role,
             contact_email=primary_email,
@@ -1382,7 +1486,7 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
         website=lead.website,
         phone=lead.phone,
         location=lead.location,
-        description=lead.notes,
+        description=_resolve_description(lead, db),
         linkedin_url=lead.linkedin_url,
         contacts=contacts,
         status=lead.status,
@@ -1622,11 +1726,20 @@ def unapprove_lead(lead_id: int, db: Session = Depends(get_db)):
 
 @app.post("/api/leads/{lead_id}/qualify", response_model=ApprovalResponse)
 def qualify_lead(lead_id: int, db: Session = Depends(get_db)):
-    """Mark a lead as qualified (no scoring required)."""
+    """
+    Mark a lead as qualified.
+
+    Re-scores using the Adina Playbook before qualifying, weighting the Notes
+    column from CSV import as the primary signal source.
+    """
     lead = db.query(Lead).filter(Lead.id == lead_id).first()
     if not lead:
         raise HTTPException(status_code=404, detail="Lead not found")
 
+    # Re-score: notes act as weighted source of truth before any online enrichment
+    score_result = score_lead(lead)
+    lead.score = score_result["score"]
+    lead.score_reason = "; ".join(score_result["reasons"])
     lead.status = "qualified"
     db.commit()
 
@@ -1813,7 +1926,7 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
         website=lead.website,
         phone=lead.phone,
         location=lead.location,
-        description=lead.notes,
+        description=_resolve_description(lead, db),
         linkedin_url=lead.linkedin_url,
         contacts=contacts,
         status=lead.status,

@@ -56,6 +56,7 @@ class LeadRead(BaseModel):
     phone: Optional[str] = None
     linkedin_url: Optional[str] = None
     contacts_json: Optional[str] = None
+    company_description: Optional[str] = None  # External/scraped description
 
     class Config:
         from_attributes = True

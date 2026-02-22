@@ -30,6 +30,9 @@ class Lead(Base):
     phone = Column(String, nullable=True)
     linkedin_url = Column(String, nullable=True)
     contacts_json = Column(Text, nullable=True)  # JSON: [{name,title,email,linkedin_url,source}]
+    # notes = internal flagging notes from CSV (scoring source of truth)
+    # company_description = external/scraped description (lazy-cached from website or ICP fallback)
+    company_description = Column(Text, nullable=True)
 
 
 class SentEmail(Base):

@@ -1,7 +1,10 @@
 """
 Outbound email drafting agent for ADINA.
 
-Generates personalized outreach emails based on lead data and knowledge pack.
+Generates personalized outreach emails grounded in:
+- The lead's industry cross-referenced against knowledge_pack["industries_served"]
+- Industry-specific problems from knowledge_pack["problems_we_solve"]
+- Preemptive objection handling from knowledge_pack["objections_and_rebuttals"]
 All logic is deterministic and inspectable.
 """
 
@@ -123,16 +126,73 @@ def get_industry_relevance(industry: str) -> dict:
     """Get relevant problems and services for an industry."""
     industry_lower = industry.lower().strip()
 
-    # Check for exact match first
     if industry_lower in INDUSTRY_RELEVANCE:
         return INDUSTRY_RELEVANCE[industry_lower]
 
-    # Check for partial matches
     for key in INDUSTRY_RELEVANCE:
         if key in industry_lower or industry_lower in key:
             return INDUSTRY_RELEVANCE[key]
 
     return DEFAULT_RELEVANCE
+
+
+def _is_industry_served(industry: str) -> bool:
+    """Check if the lead's industry is in knowledge_pack['industries_served']."""
+    if not industry:
+        return False
+    industry_lower = industry.lower()
+    for served in KNOWLEDGE_PACK.get("industries_served", []):
+        served_lower = served.lower()
+        if industry_lower in served_lower or served_lower in industry_lower:
+            return True
+    return False
+
+
+def _is_regulated_industry(industry: str) -> bool:
+    """Check if the industry is regulated (Healthcare or Real Estate)."""
+    if not industry:
+        return False
+    industry_lower = industry.lower()
+    return any(reg in industry_lower for reg in ["healthcare", "real estate", "regulated"])
+
+
+def _get_industry_proof_point(industry: str) -> Optional[str]:
+    """Find a proof point from knowledge_pack relevant to the lead's industry."""
+    industry_lower = industry.lower()
+    for proof in KNOWLEDGE_PACK.get("proof_points", []):
+        if industry_lower in proof.lower():
+            return proof
+    return None
+
+
+def _get_contextual_rebuttal(lead: Lead) -> Optional[str]:
+    """
+    Return a single-sentence preemptive rebuttal when the lead context warrants it.
+
+    Checks:
+    - Regulated industry → addresses "will it work for my industry?"
+    - Notes mention prior consulting → addresses "we've tried consultants"
+    """
+    rebuttals = KNOWLEDGE_PACK.get("objections_and_rebuttals", {})
+    industry = lead.industry or ""
+    notes_lower = (lead.notes or "").lower()
+
+    # Regulated industry: preempt the "proven methodology" concern
+    if _is_regulated_industry(industry):
+        full = rebuttals.get("How do we know it will work for our industry?", "")
+        if full:
+            # Use only the first sentence to keep the email concise
+            first_sentence = full.split(".")[0].strip()
+            return first_sentence + "." if first_sentence else None
+
+    # Notes reference prior consulting experience
+    if "consultant" in notes_lower or "fractional coo" in notes_lower or "fractional co" in notes_lower:
+        full = rebuttals.get("We've tried consultants before", "")
+        if full:
+            first_sentence = full.split(".")[0].strip()
+            return first_sentence + "." if first_sentence else None
+
+    return None
 
 
 def format_stage(stage: Optional[str]) -> str:
@@ -147,11 +207,11 @@ def draft_outreach_email(lead: Lead) -> EmailDraft:
     Generate a personalized outreach email for a lead.
 
     The draft:
-    - References the lead's company, industry, location, and stage if present
-    - Uses services/problems relevant to the industry
-    - Follows tone_guidelines from knowledge pack
-    - Includes a soft CTA
-    - Is under 150 words
+    - Cross-references lead's industry against knowledge_pack["industries_served"]
+    - Uses industry-specific problems/services from INDUSTRY_RELEVANCE
+    - Optionally includes a proof point for known industries
+    - Preemptively addresses objections based on industry or notes context
+    - Follows tone_guidelines from knowledge pack (direct, concise, <200 words)
 
     Args:
         lead: Lead model instance with company info
@@ -167,7 +227,7 @@ def draft_outreach_email(lead: Lead) -> EmailDraft:
     # Get industry-relevant content
     relevance = get_industry_relevance(industry)
     primary_problem = relevance["problems"][0]
-    primary_service = relevance["services"][0].split(":")[0]  # Get short name
+    primary_service = relevance["services"][0].split(":")[0]
 
     # Build subject line
     if stage:
@@ -176,48 +236,63 @@ def draft_outreach_email(lead: Lead) -> EmailDraft:
         subject = f"{company} + ADINA: Building systems that scale"
 
     # Build personalized opening
-    if location:
-        location_mention = f" based in {location}"
-    else:
-        location_mention = ""
+    location_mention = f" based in {location}" if location else ""
 
-    # Construct body following tone guidelines:
-    # - Professional, direct, confident
-    # - Speak to operators who understand their problem
-    # - Emphasize building and ownership transfer
-    # - Use concrete outcomes
-    # - Be concise
+    # Cross-reference with knowledge_pack to confirm this is a served industry
+    is_served = _is_industry_served(industry)
 
     body_lines = [
-        f"Hi,",
-        f"",
+        "Hi,",
+        "",
         f"I came across {company}{location_mention} and noticed you're scaling in {industry}.",
-        f"",
+        "",
     ]
 
-    # Add problem-specific hook
+    # Problem-specific hook
     if "burnout" in primary_problem.lower():
         body_lines.append(
-            f"At this stage, founders often find themselves working 60+ hour weeks while their teams lack the systems to execute consistently."
+            "At this stage, founders often find themselves working 60+ hour weeks "
+            "while their teams lack the systems to execute consistently."
         )
     elif "bottleneck" in primary_problem.lower():
         body_lines.append(
-            f"At this stage, leadership often becomes the bottleneck—every decision runs through you because the systems don't exist for your team to own execution."
+            "At this stage, leadership often becomes the bottleneck—every decision "
+            "runs through you because the systems don't exist for your team to own execution."
         )
     else:
         body_lines.append(
-            f"At this stage, growth often stalls because execution breaks down under complexity—teams operate with guesswork, and critical systems never get built."
+            "At this stage, growth often stalls because execution breaks down under "
+            "complexity—teams operate with guesswork, and critical systems never get built."
         )
 
     body_lines.extend([
-        f"",
-        f"ADINA works alongside founders as an operational co-founder. We design, build, and transfer the operating systems your team needs—SOPs, workflows, accountability structures—so you can scale without burning out.",
-        f"",
-        f"Would a 15-minute call make sense to see if there's a fit?",
-        f"",
-        f"Best,",
-        f"Ify",
-        f"ADINA & Co.",
+        "",
+        "ADINA works alongside founders as an operational co-founder. We design, build, "
+        "and transfer the operating systems your team needs—SOPs, workflows, accountability "
+        "structures—so you can scale without burning out.",
+        "",
+    ])
+
+    # Add a contextual rebuttal if relevant (regulated industry or prior consulting mention)
+    rebuttal = _get_contextual_rebuttal(lead)
+    if rebuttal:
+        body_lines.extend([rebuttal, ""])
+
+    # For served industries with a proof point, add brief credibility line
+    if is_served and not rebuttal:
+        proof = _get_industry_proof_point(industry)
+        if proof:
+            # Extract just the metric highlight (first clause up to first semicolon)
+            highlight = proof.split(";")[0].strip().rstrip(".")
+            if highlight:
+                body_lines.extend([f"We've seen this work in {industry}: {highlight}.", ""])
+
+    body_lines.extend([
+        "Would a 15-minute call make sense to see if there's a fit?",
+        "",
+        "Best,",
+        "Ify",
+        "ADINA & Co.",
     ])
 
     body = "\n".join(body_lines)
