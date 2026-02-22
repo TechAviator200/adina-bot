@@ -17,8 +17,15 @@ export async function getGmailStatus(): Promise<GmailStatus> {
 }
 
 export async function connectGmail(): Promise<GmailStatus> {
-  const { data } = await apiClient.post<GmailStatus>('/api/gmail/connect')
-  return data
+  // Use the DB-backed OAuth endpoint which returns {url} or {error}
+  const { data } = await apiClient.get<{ url?: string; error?: string }>('/api/gmail/auth/start')
+  return {
+    connected: false,
+    email: null,
+    auth_url: data.url ?? null,
+    message: null,
+    error: data.error ?? null,
+  }
 }
 
 export async function disconnectGmail(): Promise<{ success: boolean }> {

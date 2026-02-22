@@ -179,13 +179,18 @@ def get_user_key(request: Request) -> str:
 
 
 def _gmail_status_for_user(db, user_key: str) -> dict:
-    """Return {connected, email} — DB service first, fall back to file-based."""
+    """Return {connected, email} — DB service first, fall back to file-based.
+    Never surfaces internal file/config errors to the caller; returns a clean
+    not-connected dict instead so the UI shows a neutral state."""
     if gmail_service is not None:
         st = gmail_service.get_status(db, user_key)
         if st["connected"]:
             return st
+    # File-based fallback: only propagate if actually connected (ignore config errors)
     if gmail is not None:
-        return gmail.get_connection_status()
+        st = gmail.get_connection_status()
+        if st.get("connected"):
+            return st
     return {"connected": False, "email": None}
 
 
