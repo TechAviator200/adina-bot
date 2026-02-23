@@ -52,7 +52,7 @@ from sqlalchemy import func as sql_func, text
 
 from app.settings import settings
 from app.db import Base, engine, get_db
-from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache, PlacesCache, HunterCache, GmailToken
+from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache, PlacesCache, HunterCache, GmailToken, SearchApiDailyCount
 from app.schemas import (
     HealthResponse,
     ReadinessCheck,
@@ -314,6 +314,39 @@ def _resolve_description(lead, db) -> _Optional[str]:
 
     # 4. ICP fallback from knowledge_pack
     return _get_icp_description(lead.industry)
+
+
+SEARCH_DAILY_CAP = 95
+
+
+def _get_search_daily_count(db: Session) -> int:
+    """Return the number of external search API calls made today."""
+    today = date.today()
+    row = db.query(SearchApiDailyCount).filter(SearchApiDailyCount.date == today).first()
+    return row.count if row else 0
+
+
+def _increment_search_daily_count(db: Session) -> None:
+    """Increment the daily search API call counter (upsert)."""
+    today = date.today()
+    row = db.query(SearchApiDailyCount).filter(SearchApiDailyCount.date == today).first()
+    if row:
+        row.count += 1
+    else:
+        db.add(SearchApiDailyCount(date=today, count=1))
+    try:
+        db.commit()
+    except Exception:
+        db.rollback()
+
+
+def _assert_search_budget(db: Session) -> None:
+    """Raise HTTP 403 if the daily search API cap has been reached."""
+    if _get_search_daily_count(db) >= SEARCH_DAILY_CAP:
+        raise HTTPException(
+            status_code=403,
+            detail="Daily free search limit reached. Try again tomorrow or upgrade.",
+        )
 
 
 def run_db_migrations(engine) -> None:
@@ -875,11 +908,53 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
             message="No search provider configured. Set GOOGLE_CSE_API_KEY/GOOGLE_CSE_CX or SERPAPI_API_KEY.",
         )
 
-    raw_leads, query, _source, message = svc.discover_leads(
+    # ── Cache check (30-day TTL) ─────────────────────────────────────────────
+    _cache_query = " ".join(filter(None, [
+        request.industry,
+        " ".join(request.keywords or []),
+        request.company or "",
+    ])).strip()
+    _cache_hash = compute_query_hash(
+        source="adina_search",
         industry=request.industry,
-        keywords=request.keywords,
-        company=request.company,
+        country=None,
+        city=request.company,  # reuse city slot for company filter
+        limit=10,
+        query_text=_cache_query,
     )
+    _cached = get_cached_results(db, _cache_hash)
+    if _cached is not None:
+        logger.info("[discover_leads] Cache hit — returning %d cached leads", len(_cached))
+        query = _cache_query
+        raw_leads = _cached
+        message = None
+    else:
+        # ── Daily budget cap ─────────────────────────────────────────────────
+        _assert_search_budget(db)
+
+        raw_leads, query, _source, message = svc.discover_leads(
+            industry=request.industry,
+            keywords=request.keywords,
+            company=request.company,
+        )
+
+        if not message and raw_leads:
+            _increment_search_daily_count(db)
+            try:
+                set_cache_results(
+                    db=db,
+                    query_hash=_cache_hash,
+                    payload=raw_leads,
+                    ttl_days=30,
+                    source="adina_search",
+                    industry=request.industry,
+                    country=None,
+                    city=request.company,
+                    query_text=_cache_query,
+                    limit=len(raw_leads),
+                )
+            except Exception as _ce:
+                logger.warning("[discover_leads] Cache write failed: %s", _ce)
 
     if message:
         return DiscoverLeadsResponse(
@@ -1068,6 +1143,9 @@ def discover_companies(request: CompanyDiscoverRequest, db: Session = Depends(ge
         companies = [DiscoveredCompany(**item) for item in cached_results]
         return CompanyDiscoverResponse(companies=companies, cached=True, message=None)
 
+    # Daily budget cap (shared across all search API calls)
+    _assert_search_budget(db)
+
     serpapi = SerpAPIService()
     try:
         if source == "google_maps":
@@ -1092,6 +1170,7 @@ def discover_companies(request: CompanyDiscoverRequest, db: Session = Depends(ge
         message = "SerpAPI returned no results"
         return CompanyDiscoverResponse(companies=[], cached=False, message=message)
 
+    _increment_search_daily_count(db)
     ttl_hours = max(1, settings.cache_ttl_serpapi_hours)
     ttl_days = max(1, ttl_hours // 24)
     set_cache_results(

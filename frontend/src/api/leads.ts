@@ -15,6 +15,7 @@ import type {
   CompanyContactsResponse,
   ImportCompanyRequest,
   ImportCompaniesResponse,
+  DiscoverLeadsResponse,
 } from './types'
 
 export async function getLeads(): Promise<Lead[]> {
@@ -154,6 +155,19 @@ export async function importCompaniesAsLeads(
 ): Promise<ImportCompaniesResponse> {
   const { data } = await apiClient.post<ImportCompaniesResponse>('/api/leads/import', {
     companies,
+  })
+  return data
+}
+
+export async function discoverLeads(
+  industry: string,
+  keywords?: string[],
+  company?: string,
+): Promise<DiscoverLeadsResponse> {
+  const { data } = await apiClient.post<DiscoverLeadsResponse>('/api/leads/discover', {
+    industry,
+    keywords: keywords?.length ? keywords : null,
+    company: company || null,
   })
   return data
 }

@@ -91,6 +91,14 @@ class GmailToken(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False)
 
 
+class SearchApiDailyCount(Base):
+    """Daily counter for external search API calls (PSE + SerpApi). Hard cap: 95/day."""
+    __tablename__ = "search_api_daily_counts"
+    id = Column(Integer, primary_key=True, index=True)
+    date = Column(Date, nullable=False, unique=True, index=True)
+    count = Column(Integer, default=0)
+
+
 class CompanyDiscoveryCache(Base):
     __tablename__ = "company_discovery_cache"
 

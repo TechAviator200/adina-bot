@@ -20,6 +20,10 @@ if _db_url.startswith("sqlite"):
     _connect_args["check_same_thread"] = False
     logger.info("Using SQLite database")
 else:
+    # Require SSL for PostgreSQL unless the URL already specifies sslmode
+    if "sslmode" not in _db_url:
+        _connect_args["sslmode"] = "require"
+        logger.info("Enabled SSL (sslmode=require) for PostgreSQL connection")
     logger.info("Using PostgreSQL database")
 
 # Create engine with connection pooling settings suitable for production

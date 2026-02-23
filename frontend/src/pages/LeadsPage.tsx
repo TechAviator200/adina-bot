@@ -3,13 +3,13 @@ import { useNavigate } from 'react-router-dom'
 import {
   getLeads, uploadLeads, qualifyLead, draftLead, approveLead, unapproveLead,
   workflowSend, pullLeads, updateLeadStatus, updateContactEmail,
-  discoverCompaniesByIndustry, getCompanyContacts, importCompaniesAsLeads,
+  discoverCompaniesByIndustry, getCompanyContacts, importCompaniesAsLeads, discoverLeads,
 } from '../api/leads'
 import { getGmailStatus } from '../api/gmail'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
 import { LeadProfileContext } from '../context/LeadProfileContext'
-import type { Lead, DiscoveredCompany, ExecutiveContact, ImportCompanyRequest } from '../api/types'
+import type { Lead, DiscoveredCompany, ExecutiveContact, ImportCompanyRequest, DiscoveredLead } from '../api/types'
 import Button from '../components/ui/Button'
 
 const STATUS_TABS = ['all', 'new', 'qualified', 'drafted', 'approved', 'sent']
@@ -52,6 +52,12 @@ export default function LeadsPage() {
   const [importingLeads, setImportingLeads] = useState(false)
   // Tracks which contact emails the user explicitly revealed in the discover modal
   const [revealedEmails, setRevealedEmails] = useState<Set<string>>(new Set())
+  // Discover modal tab + title search
+  const [discoverTab, setDiscoverTab] = useState<'industry' | 'title'>('industry')
+  const [discoverTitle, setDiscoverTitle] = useState('')
+  const [titleResults, setTitleResults] = useState<DiscoveredLead[]>([])
+  const [titleSearchLoading, setTitleSearchLoading] = useState(false)
+  const [titleLimitError, setTitleLimitError] = useState<string | null>(null)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { addLog, startRun, logToRun, endRun } = useAgentLog()
   const { addToast } = useToast()
@@ -61,6 +67,38 @@ export default function LeadsPage() {
       .then((s) => setGmailConnected(s.connected))
       .catch(() => setGmailConnected(false))
   }, [])
+
+  // Debounced title search — fires 1 s after the user stops typing
+  useEffect(() => {
+    if (!discoverTitle.trim() || discoverTab !== 'title') {
+      setTitleResults([])
+      setTitleLimitError(null)
+      return
+    }
+    const timer = setTimeout(async () => {
+      setTitleSearchLoading(true)
+      setTitleLimitError(null)
+      try {
+        const result = await discoverLeads(
+          discoverIndustry.trim() || discoverTitle.trim(),
+          [discoverTitle.trim()],
+        )
+        setTitleResults(result.leads)
+        if (result.message) setTitleLimitError(result.message)
+      } catch (err: unknown) {
+        const status = (err as { response?: { status?: number; data?: { detail?: string } } })?.response?.status
+        const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+        if (status === 403) {
+          setTitleLimitError(detail ?? 'Daily free search limit reached. Try again tomorrow or upgrade.')
+        } else {
+          setTitleLimitError(err instanceof Error ? err.message : 'Search failed')
+        }
+      } finally {
+        setTitleSearchLoading(false)
+      }
+    }, 1000)
+    return () => clearTimeout(timer)
+  }, [discoverTitle, discoverTab, discoverIndustry])
 
   const fetchLeads = useCallback(async () => {
     setLoading(true)
@@ -323,8 +361,14 @@ export default function LeadsPage() {
         addToast(`Found ${result.companies.length} companies`, 'success')
       }
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Discovery failed'
-      addToast(`Discovery failed: ${msg}`, 'error')
+      const status = (err as { response?: { status?: number; data?: { detail?: string } } })?.response?.status
+      const detail = (err as { response?: { data?: { detail?: string } } })?.response?.data?.detail
+      if (status === 403) {
+        setDiscoverMessage(detail ?? 'Daily free search limit reached. Try again tomorrow or upgrade.')
+      } else {
+        const msg = err instanceof Error ? err.message : 'Discovery failed'
+        addToast(`Discovery failed: ${msg}`, 'error')
+      }
     } finally {
       setDiscoverLoading(false)
     }
@@ -744,11 +788,8 @@ export default function LeadsPage() {
       {discoverOpen && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 overflow-y-auto p-4">
           <div className="bg-soft-navy rounded-lg border border-warm-gray/20 p-6 w-full max-w-3xl shadow-xl my-4">
-            <div className="flex items-center justify-between mb-4">
-              <div>
-                <h2 className="text-lg font-semibold text-warm-cream">Discover Companies by Industry</h2>
-                <p className="text-xs text-warm-gray mt-1">Powered by SerpAPI. Maps mode includes phone and address when available.</p>
-              </div>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="text-lg font-semibold text-warm-cream">Discover Companies</h2>
               <button onClick={() => setDiscoverOpen(false)} className="text-warm-gray hover:text-warm-cream">
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
@@ -756,7 +797,94 @@ export default function LeadsPage() {
               </button>
             </div>
 
-            {/* Search Form */}
+            {/* Tab switcher */}
+            <div className="flex gap-1 mb-4 border-b border-warm-gray/20 pb-2">
+              {(['industry', 'title'] as const).map((tab) => (
+                <button
+                  key={tab}
+                  onClick={() => { setDiscoverTab(tab); setTitleResults([]); setTitleLimitError(null) }}
+                  className={`px-3 py-1 text-xs font-medium rounded transition-colors capitalize ${
+                    discoverTab === tab
+                      ? 'bg-terracotta text-warm-cream'
+                      : 'text-warm-gray hover:text-warm-cream'
+                  }`}
+                >
+                  {tab === 'industry' ? 'By Industry' : 'By Title'}
+                </button>
+              ))}
+            </div>
+
+            {/* ── Title Tab ── */}
+            {discoverTab === 'title' && (
+              <div className="mb-4 space-y-3">
+                <p className="text-xs text-warm-gray">Search companies by the job title of their people. Results update 1 s after you stop typing.</p>
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-xs text-warm-gray mb-1">Job Title *</label>
+                    <input
+                      type="text"
+                      value={discoverTitle}
+                      onChange={(e) => setDiscoverTitle(e.target.value)}
+                      placeholder="e.g. CEO, COO, Founder"
+                      className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-warm-gray mb-1">Industry (optional)</label>
+                    <input
+                      type="text"
+                      value={discoverIndustry}
+                      onChange={(e) => setDiscoverIndustry(e.target.value)}
+                      placeholder="e.g. Healthcare, SaaS"
+                      className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                    />
+                  </div>
+                </div>
+                {titleSearchLoading && (
+                  <p className="text-xs text-warm-gray flex items-center gap-1.5">
+                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4a4 4 0 00-4 4H4z" />
+                    </svg>
+                    Searching...
+                  </p>
+                )}
+                {titleLimitError && (
+                  <div className="p-3 bg-red-500/15 border border-red-500/30 rounded-lg text-xs text-red-400">
+                    {titleLimitError}
+                  </div>
+                )}
+                {titleResults.length > 0 && (
+                  <div className="max-h-64 overflow-y-auto border border-warm-gray/10 rounded-lg divide-y divide-warm-gray/10">
+                    {titleResults.map((lead, i) => (
+                      <div key={i} className="px-3 py-2 flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <p className="text-sm text-warm-cream font-medium truncate">{lead.company}</p>
+                          {lead.website && <p className="text-xs text-warm-gray/70 truncate">{lead.website}</p>}
+                          {lead.description && <p className="text-xs text-warm-gray/60 line-clamp-1">{lead.description}</p>}
+                        </div>
+                        <div className="shrink-0 flex items-center gap-2">
+                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                            lead.score >= 70 ? 'bg-green-500/20 text-green-400' :
+                            lead.score >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
+                            'bg-warm-gray/20 text-warm-gray'
+                          }`}>{Math.round(lead.score)}</span>
+                          {lead.already_exists && (
+                            <span className="text-[10px] text-warm-gray/50">in DB</span>
+                          )}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!titleSearchLoading && !titleLimitError && discoverTitle.trim() && titleResults.length === 0 && (
+                  <p className="text-xs text-warm-gray/60 text-center py-4">No results yet — keep typing or wait 1 s</p>
+                )}
+              </div>
+            )}
+
+            {/* ── By Industry Tab (existing form + results) ── */}
+            {discoverTab === 'industry' && (<>
             <div className="grid grid-cols-2 md:grid-cols-4 gap-3 mb-4">
               <div className="col-span-2">
                 <label className="block text-xs text-warm-gray mb-1">Industry *</label>
@@ -839,7 +967,11 @@ export default function LeadsPage() {
             </div>
 
             {discoverMessage && (
-              <div className="mb-4 p-3 bg-terracotta/20 border border-terracotta/30 rounded-lg text-sm text-warm-cream">
+              <div className={`mb-4 p-3 rounded-lg text-sm ${
+                discoverMessage.toLowerCase().includes('limit reached')
+                  ? 'bg-red-500/15 border border-red-500/30 text-red-400'
+                  : 'bg-terracotta/20 border border-terracotta/30 text-warm-cream'
+              }`}>
                 {discoverMessage}
               </div>
             )}
@@ -971,6 +1103,7 @@ export default function LeadsPage() {
                 Enter an industry and click Search to discover companies
               </div>
             )}
+            </>)}
           </div>
         </div>
       )}

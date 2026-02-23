@@ -206,3 +206,24 @@ export interface ImportCompaniesResponse {
   skipped: number
   leads: Lead[]
 }
+
+// Smart Search — discover leads by title/industry (Google PSE → SerpApi)
+export interface DiscoveredLead {
+  company: string
+  website: string | null
+  description: string | null
+  industry: string
+  source_url: string
+  score: number
+  score_reasons: string[]
+  already_exists: boolean
+}
+
+export interface DiscoverLeadsResponse {
+  query_used: string
+  total_found: number
+  new_leads: number
+  duplicates: number
+  leads: DiscoveredLead[]
+  message: string | null
+}
