@@ -137,6 +137,12 @@ try:
 except ImportError:
     SerpAPIService = None  # type: ignore
 
+# Smart search — Google PSE first, SerpApi fallback
+try:
+    from services.adina_search_service import AdinaSearchService
+except ImportError:
+    AdinaSearchService = None  # type: ignore
+
 # Response playbook for templates
 from app.utils.response_playbook import RESPONSE_PLAYBOOK
 from app.utils.knowledge_pack import KNOWLEDGE_PACK
@@ -831,35 +837,34 @@ def pull_leads(request: PullLeadsRequest, db: Session = Depends(get_db)):
 @app.post("/api/leads/discover", response_model=DiscoverLeadsResponse)
 def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db)):
     """
-    Discover potential leads using Google Custom Search Engine.
+    Discover potential leads using Smart Search (Google PSE → SerpApi fallback).
 
-    - Searches for companies based on industry, keywords, and optional company name
+    - Tries Google Programmable Search Engine first (free tier, ~100 queries/day)
+    - Falls back to SerpApi when PSE returns 0 results or is unavailable
     - De-duplicates against existing leads in database
     - Auto-scores each discovered lead
     - Returns ranked list with reasoning (does NOT save to database)
 
-    Use POST /api/leads/upload or manual entry to save leads you want to pursue.
-
-    Note: If Google CSE is unavailable (no API key/cx or libs missing), returns empty list with message.
-    Use manual domain input with Hunter.io as fallback.
+    Configure at least one provider:
+      - Google PSE: set GOOGLE_CSE_API_KEY + GOOGLE_CSE_CX
+      - SerpApi fallback: set SERPAPI_API_KEY
     """
-    # Check if GoogleCSEService is available (libs installed)
-    if GoogleCSEService is None:
+    if AdinaSearchService is None:
         return DiscoverLeadsResponse(
             query_used="",
             total_found=0,
             new_leads=0,
             duplicates=0,
             leads=[],
-            message="Google CSE disabled. Enable later to use discovery.",
+            message="Search service unavailable. Use manual domain input with Hunter.io.",
         )
 
-    # Check if Google CSE is configured BEFORE making any API calls
-    if not settings.google_cse_api_key or not settings.google_cse_cx:
+    svc = AdinaSearchService()
+
+    if not svc.is_configured():
         logger.warning(
-            "[discover_leads] Google CSE disabled: GOOGLE_CSE_API_KEY=%s, GOOGLE_CSE_CX=%s",
-            "set" if settings.google_cse_api_key else "missing",
-            "set" if settings.google_cse_cx else "missing",
+            "[discover_leads] No search provider configured — "
+            "set GOOGLE_CSE_API_KEY+GOOGLE_CSE_CX or SERPAPI_API_KEY"
         )
         return DiscoverLeadsResponse(
             query_used="",
@@ -867,28 +872,15 @@ def discover_leads(request: DiscoverLeadsRequest, db: Session = Depends(get_db))
             new_leads=0,
             duplicates=0,
             leads=[],
-            message="Google CSE disabled (no API key/cx). Use manual domain input with Hunter.io.",
+            message="No search provider configured. Set GOOGLE_CSE_API_KEY/GOOGLE_CSE_CX or SERPAPI_API_KEY.",
         )
 
-    cse = GoogleCSEService()
+    raw_leads, query, _source, message = svc.discover_leads(
+        industry=request.industry,
+        keywords=request.keywords,
+        company=request.company,
+    )
 
-    # Build query for display even if search fails
-    query = cse._build_query(request.industry, request.keywords, request.company)
-
-    # Handle unavailable search gracefully (e.g., 403 errors)
-    try:
-        raw_leads, message = cse.discover_leads(
-            industry=request.industry,
-            keywords=request.keywords,
-            company=request.company,
-        )
-    except RuntimeError as e:
-        # Unexpected error - return maintenance message
-        logger.error("[discover_leads] Google CSE error: %s", e)
-        raw_leads = []
-        message = "Search temporarily unavailable. Use Hunter.io or manual upload."
-
-    # If maintenance mode, return early with message
     if message:
         return DiscoverLeadsResponse(
             query_used=query,
