@@ -58,6 +58,8 @@ export default function LeadsPage() {
   const [titleResults, setTitleResults] = useState<DiscoveredLead[]>([])
   const [titleSearchLoading, setTitleSearchLoading] = useState(false)
   const [titleLimitError, setTitleLimitError] = useState<string | null>(null)
+  const [selectedTitleLeads, setSelectedTitleLeads] = useState<Set<string>>(new Set())
+  const [importingTitleLeads, setImportingTitleLeads] = useState(false)
   const fileInputRef = useRef<HTMLInputElement>(null)
   const { addLog, startRun, logToRun, endRun } = useAgentLog()
   const { addToast } = useToast()
@@ -409,6 +411,60 @@ export default function LeadsPage() {
       next.has(key) ? next.delete(key) : next.add(key)
       return next
     })
+  }
+
+  function toggleTitleLeadSelect(key: string) {
+    setSelectedTitleLeads((prev) => {
+      const next = new Set(prev)
+      next.has(key) ? next.delete(key) : next.add(key)
+      return next
+    })
+  }
+
+  async function handleImportTitleSelected() {
+    if (selectedTitleLeads.size === 0) {
+      addToast('No leads selected', 'error')
+      return
+    }
+    setImportingTitleLeads(true)
+    try {
+      const toImport: ImportCompanyRequest[] = []
+      for (const key of selectedTitleLeads) {
+        const lead = titleResults.find((l) => l.company === key)
+        if (!lead) continue
+        const domain = lead.website
+          ? lead.website.replace(/^https?:\/\//, '').replace(/^www\./, '').split('/')[0]
+          : undefined
+        toImport.push({
+          name: lead.company,
+          domain: domain ?? null,
+          description: lead.description ?? null,
+          industry: discoverIndustry.trim() || discoverTitle.trim() || 'Unknown',
+          size: null,
+          location: null,
+          phone: null,
+          website_url: lead.website ?? null,
+          contact_name: null,
+          contact_role: null,
+          contact_email: null,
+          contacts: null,
+          source: 'adina_search',
+        })
+      }
+      const result = await importCompaniesAsLeads(toImport)
+      addToast(`Imported ${result.imported} leads, ${result.skipped} skipped`, 'success')
+      setDiscoverOpen(false)
+      setTitleResults([])
+      setSelectedTitleLeads(new Set())
+      setDiscoverTitle('')
+      fetchLeads()
+      setActiveTab('new')
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Import failed'
+      addToast(`Import failed: ${msg}`, 'error')
+    } finally {
+      setImportingTitleLeads(false)
+    }
   }
 
   async function handleImportSelected() {
@@ -852,7 +908,7 @@ export default function LeadsPage() {
                       className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
                     />
                   </div>
-                  <div>
+                  <div className="col-span-2 md:col-span-2">
                     <label className="block text-xs text-warm-gray mb-1">City (optional)</label>
                     <input
                       type="text"
@@ -878,27 +934,47 @@ export default function LeadsPage() {
                   </div>
                 )}
                 {titleResults.length > 0 && (
-                  <div className="max-h-64 overflow-y-auto border border-warm-gray/10 rounded-lg divide-y divide-warm-gray/10">
-                    {titleResults.map((lead, i) => (
-                      <div key={i} className="px-3 py-2 flex items-center justify-between gap-3">
-                        <div className="min-w-0">
-                          <p className="text-sm text-warm-cream font-medium truncate">{lead.company}</p>
-                          {lead.website && <p className="text-xs text-warm-gray/70 truncate">{lead.website}</p>}
-                          {lead.description && <p className="text-xs text-warm-gray/60 line-clamp-1">{lead.description}</p>}
-                        </div>
-                        <div className="shrink-0 flex items-center gap-2">
-                          <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
-                            lead.score >= 70 ? 'bg-green-500/20 text-green-400' :
-                            lead.score >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
-                            'bg-warm-gray/20 text-warm-gray'
-                          }`}>{Math.round(lead.score)}</span>
-                          {lead.already_exists && (
-                            <span className="text-[10px] text-warm-gray/50">in DB</span>
-                          )}
-                        </div>
-                      </div>
-                    ))}
-                  </div>
+                  <>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs text-warm-gray">{titleResults.length} leads found</span>
+                      {selectedTitleLeads.size > 0 && (
+                        <Button size="sm" onClick={handleImportTitleSelected} disabled={importingTitleLeads}>
+                          {importingTitleLeads ? 'Importing...' : `Import ${selectedTitleLeads.size} Selected`}
+                        </Button>
+                      )}
+                    </div>
+                    <div className="max-h-64 overflow-y-auto border border-warm-gray/10 rounded-lg divide-y divide-warm-gray/10">
+                      {titleResults.map((lead, i) => {
+                        const key = lead.company
+                        const isSelected = selectedTitleLeads.has(key)
+                        return (
+                          <div key={i} className={`px-3 py-2 flex items-center gap-3 ${isSelected ? 'bg-terracotta/10' : ''}`}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={() => toggleTitleLeadSelect(key)}
+                              className="accent-terracotta shrink-0"
+                            />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-sm text-warm-cream font-medium truncate">{lead.company}</p>
+                              {lead.website && <p className="text-xs text-warm-gray/70 truncate">{lead.website}</p>}
+                              {lead.description && <p className="text-xs text-warm-gray/60 line-clamp-1">{lead.description}</p>}
+                            </div>
+                            <div className="shrink-0 flex items-center gap-2">
+                              <span className={`text-[10px] px-2 py-0.5 rounded-full font-medium ${
+                                lead.score >= 70 ? 'bg-green-500/20 text-green-400' :
+                                lead.score >= 40 ? 'bg-yellow-500/20 text-yellow-400' :
+                                'bg-warm-gray/20 text-warm-gray'
+                              }`}>{Math.round(lead.score)}</span>
+                              {lead.already_exists && (
+                                <span className="text-[10px] text-warm-gray/50">in DB</span>
+                              )}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </>
                 )}
                 {!titleSearchLoading && !titleLimitError && discoverTitle.trim() && titleResults.length === 0 && (
                   <p className="text-xs text-warm-gray/60 text-center py-4">No results yet — keep typing or wait 1 s</p>
