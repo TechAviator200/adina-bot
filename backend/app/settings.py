@@ -3,6 +3,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger(__name__)
@@ -48,6 +49,18 @@ class Settings(BaseSettings):
     google_client_secret: Optional[str] = None
     google_redirect_uri: Optional[str] = None  # e.g. https://your-backend/api/gmail/auth/callback
     gmail_oauth_encryption_key: Optional[str] = None  # Fernet key (32-byte url-safe base64)
+
+    @field_validator(
+        "google_client_id", "google_client_secret",
+        "google_redirect_uri", "gmail_oauth_encryption_key",
+        mode="before",
+    )
+    @classmethod
+    def strip_oauth_whitespace(cls, v):
+        """Strip accidental whitespace/newlines from OAuth env vars (common copy-paste issue)."""
+        if isinstance(v, str):
+            return v.strip()
+        return v
 
     @property
     def resolved_credentials_dir(self) -> Path:
