@@ -79,9 +79,12 @@ export default function LeadsPage() {
       setTitleSearchLoading(true)
       setTitleLimitError(null)
       try {
+        const keywords = [discoverTitle.trim()]
+        if (discoverCity.trim()) keywords.push(discoverCity.trim())
+        if (discoverCountry.trim()) keywords.push(discoverCountry.trim())
         const result = await discoverLeads(
           discoverIndustry.trim() || discoverTitle.trim(),
-          [discoverTitle.trim()],
+          keywords,
         )
         setTitleResults(result.leads)
         if (result.message) setTitleLimitError(result.message)
@@ -98,7 +101,7 @@ export default function LeadsPage() {
       }
     }, 1000)
     return () => clearTimeout(timer)
-  }, [discoverTitle, discoverTab, discoverIndustry])
+  }, [discoverTitle, discoverTab, discoverIndustry, discoverCity, discoverCountry])
 
   const fetchLeads = useCallback(async () => {
     setLoading(true)
@@ -818,8 +821,8 @@ export default function LeadsPage() {
             {discoverTab === 'title' && (
               <div className="mb-4 space-y-3">
                 <p className="text-xs text-warm-gray">Search companies by the job title of their people. Results update 1 s after you stop typing.</p>
-                <div className="grid grid-cols-2 gap-3">
-                  <div>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+                  <div className="col-span-2">
                     <label className="block text-xs text-warm-gray mb-1">Job Title *</label>
                     <input
                       type="text"
@@ -836,6 +839,26 @@ export default function LeadsPage() {
                       value={discoverIndustry}
                       onChange={(e) => setDiscoverIndustry(e.target.value)}
                       placeholder="e.g. Healthcare, SaaS"
+                      className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-warm-gray mb-1">Country (optional)</label>
+                    <input
+                      type="text"
+                      value={discoverCountry}
+                      onChange={(e) => setDiscoverCountry(e.target.value)}
+                      placeholder="e.g. US, UK"
+                      className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-warm-gray mb-1">City (optional)</label>
+                    <input
+                      type="text"
+                      value={discoverCity}
+                      onChange={(e) => setDiscoverCity(e.target.value)}
+                      placeholder="e.g. Austin"
                       className="w-full px-3 py-2 rounded-md bg-warm-cream/10 border border-warm-gray/20 text-warm-cream text-sm placeholder:text-warm-gray/50 focus:outline-none focus:border-terracotta"
                     />
                   </div>
