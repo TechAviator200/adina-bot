@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink } from 'react-router-dom'
-import { getGmailStatus } from '../../api/gmail'
+import { getEmailAccountsStatus, disconnectAccount } from '../../api/emailAccounts'
+import type { EmailAccount } from '../../api/types'
 
 const navItems = [
   { to: '/demo', label: 'Demo' },
@@ -14,13 +15,27 @@ const navItems = [
 const demoMode = import.meta.env.VITE_DEMO_MODE === 'true'
 
 export default function Sidebar() {
-  const [gmailEmail, setGmailEmail] = useState<string | null>(null)
+  const [activeAccount, setActiveAccount] = useState<EmailAccount | null>(null)
+  const [signingOut, setSigningOut] = useState(false)
 
   useEffect(() => {
-    getGmailStatus()
-      .then((s) => { if (s.connected && s.email) setGmailEmail(s.email) })
+    getEmailAccountsStatus()
+      .then((s) => setActiveAccount(s.active_account))
       .catch(() => {})
   }, [])
+
+  async function handleSignOut() {
+    if (!activeAccount) return
+    setSigningOut(true)
+    try {
+      await disconnectAccount(activeAccount.id)
+      setActiveAccount(null)
+    } catch {
+      // silently ignore
+    } finally {
+      setSigningOut(false)
+    }
+  }
 
   return (
     <aside className="w-52 bg-soft-navy flex flex-col border-r border-warm-gray/20">
@@ -37,9 +52,9 @@ export default function Sidebar() {
               Demo Mode
             </span>
           )}
-          {gmailEmail && !demoMode && (
-            <span className="text-[10px] text-warm-gray truncate block" title={gmailEmail}>
-              {gmailEmail}
+          {activeAccount && !demoMode && (
+            <span className="text-[10px] text-warm-gray truncate block" title={activeAccount.email_address ?? ''}>
+              {activeAccount.email_address}
             </span>
           )}
         </div>
@@ -62,6 +77,18 @@ export default function Sidebar() {
           </NavLink>
         ))}
       </nav>
+
+      {activeAccount && !demoMode && (
+        <div className="px-5 py-4 border-t border-warm-gray/15">
+          <button
+            onClick={handleSignOut}
+            disabled={signingOut}
+            className="text-xs text-warm-gray hover:text-terracotta transition-colors disabled:opacity-50"
+          >
+            {signingOut ? 'Signing out...' : 'Sign Out'}
+          </button>
+        </div>
+      )}
     </aside>
   )
 }

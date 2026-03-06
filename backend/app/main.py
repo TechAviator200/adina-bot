@@ -2782,13 +2782,12 @@ def get_email_accounts_status(request: Request, db: Session = Depends(get_db)):
     active = next((a for a in accounts if a.is_active), None)
 
     # Also check legacy Gmail token table and surface it as a virtual account if present
-    legacy_gmail_accounts = []
     if gmail_service is not None:
         st = gmail_service.get_status(db, user_key)
         if st["connected"]:
             # Check if there's already an email_accounts row for this gmail
             has_gmail_row = any(a.provider == "gmail" for a in accounts)
-            if not has_gmail_row and st.get("email"):
+            if not has_gmail_row:
                 # Create a row automatically for backward compat
                 now = datetime.now(timezone.utc)
                 row = db.query(GmailToken).filter(GmailToken.user_key == user_key).first()
@@ -2796,13 +2795,13 @@ def get_email_accounts_status(request: Request, db: Session = Depends(get_db)):
                     ea = EmailAccount(
                         user_key=user_key,
                         provider="gmail",
-                        email_address=st["email"],
+                        email_address=st.get("email") or row.email_address,
                         access_token_encrypted=row.access_token_encrypted,
                         refresh_token_encrypted=row.refresh_token_encrypted,
                         token_expiry=row.token_expiry,
                         is_active=1 if active is None else 0,
-                        created_at=row.created_at,
-                        updated_at=row.updated_at,
+                        created_at=row.created_at or now,
+                        updated_at=row.updated_at or now,
                     )
                     db.add(ea)
                     try:
