@@ -14,8 +14,12 @@ import type { EmailAccount, ConnectSmtpRequest } from '../api/types'
 // Known SMTP presets by email domain
 function smtpPreset(email: string): Partial<ConnectSmtpRequest> {
   const domain = email.split('@')[1]?.toLowerCase() ?? ''
+  if (domain === 'gmail.com' || domain === 'googlemail.com')
+    return { provider: 'custom_smtp', smtp_host: 'smtp.gmail.com', smtp_port: 587 }
   if (domain === 'yahoo.com' || domain === 'ymail.com')
     return { provider: 'yahoo', smtp_host: 'smtp.mail.yahoo.com', smtp_port: 587 }
+  if (domain === 'outlook.com' || domain === 'hotmail.com' || domain === 'live.com')
+    return { provider: 'custom_smtp', smtp_host: 'smtp-mail.outlook.com', smtp_port: 587 }
   if (domain === 'icloud.com')
     return { provider: 'custom_smtp', smtp_host: 'smtp.mail.me.com', smtp_port: 587 }
   return { provider: 'custom_smtp', smtp_host: '', smtp_port: 587 }
@@ -186,69 +190,34 @@ export default function LoginPage() {
       ) : (
         /* ── Sign in state ── */
         <div className="space-y-3">
-          <Button
-            size="sm"
-            onClick={handleConnectGoogle}
-            disabled={connectingGoogle}
-            className="w-full justify-center"
-          >
-            <span className="flex items-center gap-2">
-              <GoogleIcon />
-              {connectingGoogle ? 'Opening...' : 'Sign in with Google'}
-            </span>
-          </Button>
+          {/* Primary: email + password form */}
+          <form onSubmit={handleConnectSmtp} className="bg-soft-navy border border-warm-gray/20 rounded-lg p-4 space-y-3">
+            <div>
+              <label className="block text-[11px] text-warm-gray mb-1">Email address</label>
+              <input
+                type="email"
+                required
+                value={smtpEmail}
+                onChange={(e) => handleSmtpEmailChange(e.target.value)}
+                placeholder="you@yourbusiness.com"
+                className="w-full bg-warm-cream/5 border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream placeholder:text-warm-gray/40 outline-none focus:border-terracotta/50"
+              />
+            </div>
 
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={handleConnectOutlook}
-            disabled={connectingOutlook}
-            className="w-full justify-center"
-          >
-            {connectingOutlook ? 'Opening...' : 'Sign in with Microsoft (Outlook / 365)'}
-          </Button>
+            <div>
+              <label className="block text-[11px] text-warm-gray mb-1">Password / App password</label>
+              <input
+                type="password"
+                required
+                value={smtpPassword}
+                onChange={(e) => setSmtpPassword(e.target.value)}
+                placeholder="••••••••"
+                className="w-full bg-warm-cream/5 border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream placeholder:text-warm-gray/40 outline-none focus:border-terracotta/50"
+              />
+            </div>
 
-          <div className="relative flex items-center py-1">
-            <div className="flex-1 border-t border-warm-gray/15" />
-            <span className="px-3 text-[10px] text-warm-gray/50">or</span>
-            <div className="flex-1 border-t border-warm-gray/15" />
-          </div>
-
-          {!showSmtp ? (
-            <button
-              onClick={() => setShowSmtp(true)}
-              className="w-full text-xs text-warm-gray hover:text-warm-cream text-center py-1 transition-colors"
-            >
-              Sign in with Yahoo / other email
-            </button>
-          ) : (
-            <form onSubmit={handleConnectSmtp} className="bg-soft-navy border border-warm-gray/20 rounded-lg p-4 space-y-3">
-              <p className="text-xs font-medium text-warm-cream">Email & Password</p>
-
-              <div>
-                <label className="block text-[11px] text-warm-gray mb-1">Email address</label>
-                <input
-                  type="email"
-                  required
-                  value={smtpEmail}
-                  onChange={(e) => handleSmtpEmailChange(e.target.value)}
-                  placeholder="you@yourbusiness.com"
-                  className="w-full bg-warm-cream/5 border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream placeholder:text-warm-gray/40 outline-none focus:border-terracotta/50"
-                />
-              </div>
-
-              <div>
-                <label className="block text-[11px] text-warm-gray mb-1">Password / App password</label>
-                <input
-                  type="password"
-                  required
-                  value={smtpPassword}
-                  onChange={(e) => setSmtpPassword(e.target.value)}
-                  placeholder="••••••••"
-                  className="w-full bg-warm-cream/5 border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream placeholder:text-warm-gray/40 outline-none focus:border-terracotta/50"
-                />
-              </div>
-
+            {/* SMTP host — shown only when domain is unknown */}
+            {smtpEmail.includes('@') && !smtpHost && (
               <div className="grid grid-cols-3 gap-2">
                 <div className="col-span-2">
                   <label className="block text-[11px] text-warm-gray mb-1">SMTP host</label>
@@ -272,21 +241,49 @@ export default function LoginPage() {
                   />
                 </div>
               </div>
+            )}
 
+            {smtpHost && (
               <p className="text-[10px] text-warm-gray/50">
-                For Yahoo, use an app password from your account security settings.
+                Server: {smtpHost}:{smtpPort}
+                {(smtpEmail.includes('@gmail.com') || smtpEmail.includes('@googlemail.com')) &&
+                  ' — Gmail requires an app password (not your regular password)'}
               </p>
+            )}
 
-              <div className="flex gap-2">
-                <Button type="submit" size="sm" disabled={connectingSmtp} className="flex-1 justify-center">
-                  {connectingSmtp ? 'Connecting...' : 'Sign In'}
-                </Button>
-                <Button type="button" size="sm" variant="secondary" onClick={() => setShowSmtp(false)}>
-                  Cancel
-                </Button>
-              </div>
-            </form>
-          )}
+            <Button type="submit" size="sm" disabled={connectingSmtp} className="w-full justify-center">
+              {connectingSmtp ? 'Signing in...' : 'Sign In'}
+            </Button>
+          </form>
+
+          <div className="relative flex items-center py-1">
+            <div className="flex-1 border-t border-warm-gray/15" />
+            <span className="px-3 text-[10px] text-warm-gray/50">or use OAuth</span>
+            <div className="flex-1 border-t border-warm-gray/15" />
+          </div>
+
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={handleConnectGoogle}
+            disabled={connectingGoogle}
+            className="w-full justify-center"
+          >
+            <span className="flex items-center gap-2">
+              <GoogleIcon />
+              {connectingGoogle ? 'Opening...' : 'Sign in with Google (OAuth)'}
+            </span>
+          </Button>
+
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={handleConnectOutlook}
+            disabled={connectingOutlook}
+            className="w-full justify-center"
+          >
+            {connectingOutlook ? 'Opening...' : 'Sign in with Microsoft (OAuth)'}
+          </Button>
 
           <p className="text-[11px] text-warm-gray/40 leading-relaxed text-center pt-1">
             Your credentials are encrypted and stored only on the server.
