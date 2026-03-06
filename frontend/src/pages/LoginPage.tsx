@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react'
-import { getGmailStatus, connectGmail, disconnectGmail } from '../api/gmail'
+import { getGmailStatus, connectGmail } from '../api/gmail'
+import { getEmailAccountsStatus, disconnectAccount } from '../api/emailAccounts'
 import { useToast } from '../components/ui/Toast'
 import Button from '../components/ui/Button'
-import type { GmailStatus } from '../api/types'
+import type { GmailStatus, EmailAccount } from '../api/types'
 
 const ACCOUNT_EMAIL_KEY = 'adina_account_email'
 
 export default function LoginPage() {
   const [gmailStatus, setGmailStatus] = useState<GmailStatus | null>(null)
+  const [activeAccount, setActiveAccount] = useState<EmailAccount | null>(null)
   const [loading, setLoading] = useState(true)
   const [connecting, setConnecting] = useState(false)
+  const [signingOut, setSigningOut] = useState(false)
   const [accountEmail, setAccountEmail] = useState(
     () => localStorage.getItem(ACCOUNT_EMAIL_KEY) ?? ''
   )
@@ -17,10 +20,13 @@ export default function LoginPage() {
   const { addToast } = useToast()
 
   useEffect(() => {
-    getGmailStatus()
-      .then(setGmailStatus)
-      .catch(() => {})
-      .finally(() => setLoading(false))
+    Promise.all([
+      getGmailStatus().catch(() => null),
+      getEmailAccountsStatus().catch(() => null),
+    ]).then(([gmail, accounts]) => {
+      if (gmail) setGmailStatus(gmail)
+      if (accounts) setActiveAccount(accounts.active_account)
+    }).finally(() => setLoading(false))
   }, [])
 
   function handleSaveEmail() {
@@ -50,18 +56,23 @@ export default function LoginPage() {
     }
   }
 
-  async function handleDisconnectGmail() {
+  async function handleSignOut() {
+    if (!activeAccount) return
+    setSigningOut(true)
     try {
-      await disconnectGmail()
-      addToast('Gmail disconnected', 'success')
-      setGmailStatus({ connected: false, email: null, auth_url: null, message: null, error: null })
+      await disconnectAccount(activeAccount.id)
+      addToast('Signed out successfully', 'success')
+      setActiveAccount(null)
+      setGmailStatus((prev) => prev ? { ...prev, connected: false, email: null } : prev)
     } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : 'Disconnect failed'
-      addToast(`Disconnect failed: ${msg}`, 'error')
+      const msg = err instanceof Error ? err.message : 'Sign out failed'
+      addToast(msg, 'error')
+    } finally {
+      setSigningOut(false)
     }
   }
 
-  const isConnected = gmailStatus?.connected
+  const isConnected = activeAccount !== null || gmailStatus?.connected
 
   return (
     <div className="max-w-md">
@@ -147,13 +158,17 @@ export default function LoginPage() {
             <div className="space-y-3">
               <div className="flex items-center gap-2 px-3 py-2.5 bg-green-500/5 border border-green-500/20 rounded-lg">
                 <span className="w-2 h-2 bg-green-500 rounded-full shrink-0" />
-                <div className="min-w-0">
-                  <p className="text-xs text-warm-cream font-medium truncate">{gmailStatus?.email}</p>
-                  <p className="text-[10px] text-warm-gray">Emails will be sent from this address</p>
+                <div className="min-w-0 flex-1">
+                  <p className="text-xs text-warm-cream font-medium truncate">
+                    {activeAccount?.email_address || gmailStatus?.email}
+                  </p>
+                  <p className="text-[10px] text-warm-gray capitalize">
+                    {activeAccount?.provider ?? 'gmail'} · Connected
+                  </p>
                 </div>
               </div>
-              <Button size="sm" variant="secondary" onClick={handleDisconnectGmail}>
-                Disconnect Gmail
+              <Button size="sm" variant="secondary" onClick={handleSignOut} disabled={signingOut}>
+                {signingOut ? 'Signing out...' : 'Sign Out'}
               </Button>
             </div>
           ) : (
