@@ -50,9 +50,15 @@ class Settings(BaseSettings):
     google_redirect_uri: Optional[str] = None  # e.g. https://your-backend/api/gmail/auth/callback
     gmail_oauth_encryption_key: Optional[str] = None  # Fernet key (32-byte url-safe base64)
 
+    # Outlook / Microsoft 365 OAuth
+    outlook_client_id: Optional[str] = None
+    outlook_client_secret: Optional[str] = None
+    outlook_redirect_uri: Optional[str] = None  # e.g. https://your-backend/api/email-accounts/connect/outlook/callback
+
     @field_validator(
         "google_client_id", "google_client_secret",
         "google_redirect_uri", "gmail_oauth_encryption_key",
+        "outlook_client_id", "outlook_client_secret", "outlook_redirect_uri",
         mode="before",
     )
     @classmethod

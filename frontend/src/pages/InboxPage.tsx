@@ -2,11 +2,11 @@ import { useState, useEffect, useRef, useContext } from 'react'
 import { useSearchParams, useNavigate } from 'react-router-dom'
 import { getOutreachTemplates } from '../api/inbox'
 import { getLeads, fetchLeadContacts, saveDraft } from '../api/leads'
-import { getGmailStatus, sendReply } from '../api/gmail'
+import { getEmailAccountsStatus, replyEmailGeneral } from '../api/emailAccounts'
 import { useAgentLog } from '../hooks/useAgentLog'
 import { useToast } from '../components/ui/Toast'
 import { LeadProfileContext } from '../context/LeadProfileContext'
-import type { Lead, OutreachEmailTemplate, ProfileContact } from '../api/types'
+import type { Lead, OutreachEmailTemplate, ProfileContact, EmailAccount } from '../api/types'
 import Button from '../components/ui/Button'
 
 function parseLeadContacts(lead: Lead): ProfileContact[] {
@@ -29,41 +29,46 @@ export default function InboxPage() {
   const [selectedTemplateId, setSelectedTemplateId] = useState('')
   const [draftSubject, setDraftSubject] = useState('')
   const [draftBody, setDraftBody] = useState('')
-  const [gmailConnected, setGmailConnected] = useState(false)
+  const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([])
+  const [activeAccount, setActiveAccount] = useState<EmailAccount | null>(null)
+  const [selectedAccountId, setSelectedAccountId] = useState<number | null>(null)
   const [sendingReply, setSendingReply] = useState(false)
   const [savingDraft, setSavingDraft] = useState(false)
   const [fetchingContacts, setFetchingContacts] = useState(false)
   const { addLog } = useAgentLog()
   const { addToast } = useToast()
-  // Holds an email to pre-fill after a lead selection resets the recipient field
   const pendingEmailRef = useRef<string | null>(null)
-  // Holds saved draft subject/body to pre-fill (from lead.email_subject / email_body)
   const pendingDraftRef = useRef<{ subject: string; body: string } | null>(null)
+
+  const hasConnectedAccount = emailAccounts.length > 0
 
   useEffect(() => {
     Promise.all([
       getLeads(),
       getOutreachTemplates(),
-      getGmailStatus(),
-    ]).then(([fetchedLeads, fetchedTemplates, gmailStatus]) => {
+      getEmailAccountsStatus(),
+    ]).then(([fetchedLeads, fetchedTemplates, accountsStatus]) => {
       setLeads(fetchedLeads)
       setTemplates(fetchedTemplates)
-      setGmailConnected(gmailStatus.connected)
+      setEmailAccounts(accountsStatus.accounts)
+      setActiveAccount(accountsStatus.active_account)
+      if (accountsStatus.active_account) {
+        setSelectedAccountId(accountsStatus.active_account.id)
+      } else if (accountsStatus.accounts.length > 0) {
+        setSelectedAccountId(accountsStatus.accounts[0].id)
+      }
 
-      // Pre-fill from URL params (e.g. navigated from Leads Draft button or ProfilePanel)
       const paramLeadId = searchParams.get('leadId')
       const paramEmail = searchParams.get('email')
       if (paramLeadId) {
         const id = Number(paramLeadId)
         const lead = fetchedLeads.find((l) => l.id === id)
         if (lead) {
-          // Store email in ref so the selectedLeadId reset effect can pick it up
           if (paramEmail) {
             pendingEmailRef.current = decodeURIComponent(paramEmail)
           } else if (lead.contact_email) {
             pendingEmailRef.current = lead.contact_email
           }
-          // If lead has a saved draft, pre-load it
           if (lead.email_subject || lead.email_body) {
             pendingDraftRef.current = {
               subject: lead.email_subject ?? '',
@@ -73,13 +78,10 @@ export default function InboxPage() {
           setSelectedLeadId(id)
         }
       }
-      // Clear params so a refresh doesn't re-apply them
       if (paramLeadId || paramEmail) setSearchParams({}, { replace: true })
     }).catch(() => {})
   }, [])
 
-  // Reset recipient and draft when lead changes.
-  // Consume pending refs from navigation (email pre-fill and saved draft pre-load).
   useEffect(() => {
     const pendingEmail = pendingEmailRef.current
     const pendingDraft = pendingDraftRef.current
@@ -98,13 +100,11 @@ export default function InboxPage() {
     }
   }, [selectedLeadId])
 
-  // Keep ProfilePanel in sync with the selected lead; clear on unmount
   useEffect(() => {
     setProfileLeadId(selectedLeadId ? Number(selectedLeadId) : null)
     return () => { setProfileLeadId(null) }
   }, [selectedLeadId])
 
-  // Populate draft from template when template changes (only if no draft already loaded)
   useEffect(() => {
     if (!selectedTemplateId) return
     const t = templates.find((t) => t.id === selectedTemplateId)
@@ -120,24 +120,24 @@ export default function InboxPage() {
   const hasSingleFallback = emailContacts.length === 0 && Boolean(selectedLead?.contact_email)
   const hasNoContacts = emailContacts.length === 0 && !hasSingleFallback
 
-  // Effective recipient email
   const recipientEmail =
     selectedRecipient ||
     (emailContacts.length === 1 ? (emailContacts[0].email ?? '') : '') ||
     (hasSingleFallback ? (selectedLead?.contact_email ?? '') : '')
 
   const selectedTemplate = templates.find((t) => t.id === selectedTemplateId) ?? null
-  // Show compose area when a template is selected OR when a saved draft is loaded
   const showCompose = Boolean(selectedTemplate || draftSubject || draftBody)
 
+  // Effective sending account
+  const sendingAccount = emailAccounts.find((a) => a.id === selectedAccountId) ?? activeAccount
+
   const canSend = Boolean(
-    selectedLeadId && recipientEmail && draftBody && gmailConnected && !sendingReply
+    selectedLeadId && recipientEmail && draftBody && sendingAccount && !sendingReply
   )
   const canSaveDraft = Boolean(
     selectedLeadId && recipientEmail && draftBody && !savingDraft
   )
 
-  // Fetch contacts via Hunter.io and update this lead in local state
   async function handleFetchContacts() {
     if (!selectedLeadId) return
     setFetchingContacts(true)
@@ -147,7 +147,6 @@ export default function InboxPage() {
         addToast('No contacts found for this lead', 'error')
         return
       }
-      // Patch the local leads state so the recipient dropdown recalculates
       const contactsJson = JSON.stringify(profile.contacts)
       setLeads((prev) =>
         prev.map((l) =>
@@ -169,9 +168,15 @@ export default function InboxPage() {
     if (!canSend || !selectedLeadId || !recipientEmail) return
     setSendingReply(true)
     try {
-      const resp = await sendReply(Number(selectedLeadId), recipientEmail, draftSubject, draftBody)
+      const resp = await replyEmailGeneral({
+        lead_id: Number(selectedLeadId),
+        to: recipientEmail,
+        subject: draftSubject,
+        body: draftBody,
+        from_account_id: sendingAccount?.id,
+      })
       if (resp.success) {
-        addToast('Email sent via Gmail', 'success')
+        addToast(`Email sent via ${resp.provider ?? 'connected account'}`, 'success')
         addLog(`Email sent to ${recipientEmail} for lead #${selectedLeadId}`)
         setSelectedTemplateId('')
         setDraftSubject('')
@@ -209,9 +214,9 @@ export default function InboxPage() {
     <div className="max-w-2xl">
       <h1 className="text-xl font-semibold text-warm-cream mb-4">Inbox</h1>
 
-      {!gmailConnected && (
+      {!hasConnectedAccount && (
         <div className="mb-4 px-3 py-2 bg-warm-gray/10 border border-warm-gray/20 rounded-lg flex items-center justify-between">
-          <span className="text-xs text-warm-gray">Gmail not connected — sending is disabled.</span>
+          <span className="text-xs text-warm-gray">No sending account connected — sending is disabled.</span>
           <a href="/settings" className="text-xs text-terracotta hover:underline">Connect in Settings →</a>
         </div>
       )}
@@ -262,6 +267,9 @@ export default function InboxPage() {
                   )}
                 </p>
                 <p className="text-xs text-warm-gray mt-0.5">{emailContacts[0].email}</p>
+                {emailContacts[0].phone && (
+                  <p className="text-xs text-warm-gray/70 mt-0.5">{emailContacts[0].phone}</p>
+                )}
               </div>
             ) : hasSingleFallback ? (
               <div className="px-3 py-2 bg-soft-navy border border-warm-gray/30 rounded">
@@ -282,6 +290,24 @@ export default function InboxPage() {
                 </button>
               </div>
             ) : null}
+          </div>
+        )}
+
+        {/* From account selector (shown when multiple accounts) */}
+        {selectedLeadId && hasConnectedAccount && emailAccounts.length > 1 && (
+          <div>
+            <label className="block text-xs text-warm-gray mb-1">Send From</label>
+            <select
+              value={selectedAccountId ?? ''}
+              onChange={(e) => setSelectedAccountId(e.target.value ? Number(e.target.value) : null)}
+              className="w-full bg-soft-navy border border-warm-gray/30 rounded px-3 py-2 text-sm text-warm-cream"
+            >
+              {emailAccounts.map((acc) => (
+                <option key={acc.id} value={acc.id}>
+                  {acc.email_address} ({acc.provider}){acc.is_active ? ' — active' : ''}
+                </option>
+              ))}
+            </select>
           </div>
         )}
 
@@ -312,6 +338,15 @@ export default function InboxPage() {
         {/* Compose area */}
         {showCompose && (
           <div className="bg-soft-navy border border-warm-gray/20 rounded-lg overflow-hidden">
+            {/* From row */}
+            {sendingAccount && (
+              <div className="flex items-center border-b border-warm-gray/15 px-4 py-2.5">
+                <span className="text-xs text-warm-gray w-14 shrink-0">From</span>
+                <span className="text-sm text-warm-cream/80">{sendingAccount.email_address}</span>
+                <span className="ml-2 text-[10px] text-warm-gray/60">({sendingAccount.provider})</span>
+              </div>
+            )}
+
             {/* Subject row */}
             <div className="flex items-center border-b border-warm-gray/15 px-4 py-2.5">
               <span className="text-xs text-warm-gray w-14 shrink-0">Subject</span>
@@ -357,10 +392,10 @@ export default function InboxPage() {
               >
                 {savingDraft ? 'Saving...' : 'Save Draft'}
               </Button>
-              {!gmailConnected && (
-                <span className="text-xs text-warm-gray">Gmail not connected</span>
+              {!hasConnectedAccount && (
+                <span className="text-xs text-warm-gray">No account connected</span>
               )}
-              {gmailConnected && !recipientEmail && (
+              {hasConnectedAccount && !recipientEmail && (
                 <span className="text-xs text-warm-gray">Select a recipient above to send</span>
               )}
             </div>

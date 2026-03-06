@@ -52,7 +52,7 @@ from sqlalchemy import func as sql_func, text
 
 from app.settings import settings
 from app.db import Base, engine, get_db
-from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache, PlacesCache, HunterCache, GmailToken, SearchApiDailyCount
+from app.models import Lead, SentEmail, DailyEmailCount, CompanyDiscoveryCache, PlacesCache, HunterCache, GmailToken, SearchApiDailyCount, EmailAccount
 from app.schemas import (
     HealthResponse,
     ReadinessCheck,
@@ -97,6 +97,16 @@ from app.schemas import (
     # Profile schemas
     LeadProfile,
     ProfileContact,
+    # Email account schemas
+    EmailAccountRead,
+    EmailAccountsStatusResponse,
+    SetActiveAccountRequest,
+    DisconnectAccountRequest,
+    ConnectSmtpRequest,
+    ConnectSmtpResponse,
+    GeneralSendRequest,
+    GeneralSendResponse,
+    GeneralReplyRequest,
 )
 from app.agent.outbound import draft_outreach_email
 from app.agent.scoring import score_lead, get_quality_label, has_negative_signal
@@ -112,6 +122,18 @@ try:
     from app import gmail_service
 except ImportError:
     gmail_service = None  # type: ignore
+
+# Outlook OAuth service
+try:
+    from app import outlook_service
+except ImportError:
+    outlook_service = None  # type: ignore
+
+# SMTP service (Yahoo / custom)
+try:
+    from app import smtp_service
+except ImportError:
+    smtp_service = None  # type: ignore
 
 # Google CSE is optional - app must not crash if google libs are missing
 try:
@@ -1314,6 +1336,7 @@ def get_company_contacts(domain: str, request: CompanyContactsRequest = None, db
                     title=person.get("job_title"),
                     email=person.get("email"),
                     linkedin_url=person.get("linkedin_url"),
+                    phone=person.get("phone_number") or person.get("phone"),
                     source="hunter",
                 ))
         except Exception as e:
@@ -1358,6 +1381,7 @@ def get_company_contacts(domain: str, request: CompanyContactsRequest = None, db
                     title=person.get("title"),
                     email=person.get("email"),
                     linkedin_url=person.get("linkedin_url"),
+                    phone=person.get("phone_number") or person.get("phone"),
                     source="snov",
                 ))
         except Exception as e:
@@ -1539,6 +1563,7 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
                     title=c.get("title"),
                     email=c.get("email"),
                     linkedin_url=c.get("linkedin_url"),
+                    phone=c.get("phone"),
                     source=c.get("source"),
                 ))
         except (TypeError, ValueError):
@@ -1550,6 +1575,7 @@ def get_lead_profile(lead_id: int, db: Session = Depends(get_db)):
             title=lead.contact_role,
             email=lead.contact_email,
             linkedin_url=None,
+            phone=None,
             source=lead.source,
         ))
 
@@ -1902,6 +1928,7 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
                     "job_title": c.get("title"),
                     "email": c.get("email"),
                     "linkedin_url": c.get("linkedin_url"),
+                    "phone": c.get("phone"),
                 }
                 for c in cached_data.get("contacts", [])
             ]
@@ -1928,6 +1955,7 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
                         "title": p.get("job_title"),
                         "email": p.get("email"),
                         "linkedin_url": p.get("linkedin_url"),
+                        "phone": p.get("phone_number") or p.get("phone"),
                         "source": "hunter",
                     }
                     for p in results
@@ -1951,6 +1979,7 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
                 "title": p.get("job_title"),
                 "email": p.get("email"),
                 "linkedin_url": p.get("linkedin_url"),
+                "phone": p.get("phone_number") or p.get("phone"),
                 "source": "hunter",
             }
             for p in results
@@ -1980,6 +2009,7 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
                     title=c.get("title"),
                     email=c.get("email"),
                     linkedin_url=c.get("linkedin_url"),
+                    phone=c.get("phone"),
                     source=c.get("source"),
                 ))
         except (TypeError, ValueError):
@@ -1990,6 +2020,7 @@ def fetch_lead_contacts(lead_id: int, db: Session = Depends(get_db)):
             title=lead.contact_role,
             email=lead.contact_email,
             linkedin_url=None,
+            phone=None,
             source=lead.source,
         ))
 
@@ -2682,3 +2713,447 @@ def approve_and_send_lead(
             status="approved",
             error=result["error"],
         )
+
+
+# ===========================================================================
+# Email Accounts (Connected Sending Accounts)
+# ===========================================================================
+
+def _to_account_read(acc: EmailAccount) -> EmailAccountRead:
+    return EmailAccountRead(
+        id=acc.id,
+        user_key=acc.user_key,
+        provider=acc.provider,
+        email_address=acc.email_address,
+        smtp_host=acc.smtp_host,
+        smtp_port=acc.smtp_port,
+        imap_host=acc.imap_host,
+        imap_port=acc.imap_port,
+        is_active=bool(acc.is_active),
+        created_at=acc.created_at,
+        updated_at=acc.updated_at,
+    )
+
+
+def _get_active_account(db: Session, user_key: str) -> Optional[EmailAccount]:
+    """Return the active sending account for user_key, or None."""
+    return (
+        db.query(EmailAccount)
+        .filter(EmailAccount.user_key == user_key, EmailAccount.is_active == 1)
+        .first()
+    )
+
+
+def _send_via_account(db: Session, account: EmailAccount, to: str, subject: str, body: str) -> dict:
+    """Dispatch send to the appropriate provider."""
+    provider = account.provider
+
+    if provider == "gmail":
+        if gmail_service is None:
+            return {"success": False, "error": "Gmail service not available"}
+        try:
+            return gmail_service.send_email(db, account.user_key, to, subject, body)
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+    elif provider == "outlook":
+        if outlook_service is None:
+            return {"success": False, "error": "Outlook service not available"}
+        return outlook_service.send_email(db, account, to, subject, body)
+
+    elif provider in ("yahoo", "custom_smtp"):
+        if smtp_service is None:
+            return {"success": False, "error": "SMTP service not available"}
+        return smtp_service.send_email(db, account, to, subject, body)
+
+    return {"success": False, "error": f"Unknown provider: {provider}"}
+
+
+@app.get("/api/email-accounts/status", response_model=EmailAccountsStatusResponse)
+def get_email_accounts_status(request: Request, db: Session = Depends(get_db)):
+    """List all connected sending accounts for the current user. Also shows the active account."""
+    user_key = get_user_key(request)
+    accounts = (
+        db.query(EmailAccount)
+        .filter(EmailAccount.user_key == user_key)
+        .order_by(EmailAccount.created_at.desc())
+        .all()
+    )
+    active = next((a for a in accounts if a.is_active), None)
+
+    # Also check legacy Gmail token table and surface it as a virtual account if present
+    legacy_gmail_accounts = []
+    if gmail_service is not None:
+        st = gmail_service.get_status(db, user_key)
+        if st["connected"]:
+            # Check if there's already an email_accounts row for this gmail
+            has_gmail_row = any(a.provider == "gmail" for a in accounts)
+            if not has_gmail_row and st.get("email"):
+                # Create a row automatically for backward compat
+                now = datetime.now(timezone.utc)
+                row = db.query(GmailToken).filter(GmailToken.user_key == user_key).first()
+                if row:
+                    ea = EmailAccount(
+                        user_key=user_key,
+                        provider="gmail",
+                        email_address=st["email"],
+                        access_token_encrypted=row.access_token_encrypted,
+                        refresh_token_encrypted=row.refresh_token_encrypted,
+                        token_expiry=row.token_expiry,
+                        is_active=1 if active is None else 0,
+                        created_at=row.created_at,
+                        updated_at=row.updated_at,
+                    )
+                    db.add(ea)
+                    try:
+                        db.commit()
+                        db.refresh(ea)
+                        accounts.append(ea)
+                        if active is None:
+                            active = ea
+                    except Exception:
+                        db.rollback()
+
+    account_reads = [_to_account_read(a) for a in accounts]
+    active_read = _to_account_read(active) if active else None
+    return EmailAccountsStatusResponse(accounts=account_reads, active_account=active_read)
+
+
+@app.post("/api/email-accounts/set-active")
+def set_active_account(req: SetActiveAccountRequest, request: Request, db: Session = Depends(get_db)):
+    """Mark an email account as the active sending account for this user."""
+    user_key = get_user_key(request)
+    account = db.query(EmailAccount).filter(
+        EmailAccount.id == req.account_id,
+        EmailAccount.user_key == user_key,
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    # Deactivate all others for this user
+    db.query(EmailAccount).filter(EmailAccount.user_key == user_key).update({"is_active": 0})
+    account.is_active = 1
+    account.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    return {"success": True, "active_account_id": account.id, "email": account.email_address}
+
+
+@app.post("/api/email-accounts/disconnect")
+def disconnect_account(req: DisconnectAccountRequest, request: Request, db: Session = Depends(get_db)):
+    """Disconnect/remove a connected sending account."""
+    user_key = get_user_key(request)
+    account = db.query(EmailAccount).filter(
+        EmailAccount.id == req.account_id,
+        EmailAccount.user_key == user_key,
+    ).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    provider = account.provider
+    db.delete(account)
+
+    # If gmail, also remove legacy token row
+    if provider == "gmail" and gmail_service is not None:
+        gmail_service.disconnect(db, user_key)
+
+    db.commit()
+    return {"success": True, "disconnected_account_id": req.account_id}
+
+
+@app.post("/api/email-accounts/connect/smtp", response_model=ConnectSmtpResponse)
+def connect_smtp_account(req: ConnectSmtpRequest, request: Request, db: Session = Depends(get_db)):
+    """Connect a Yahoo or custom SMTP account by validating credentials and storing encrypted."""
+    if smtp_service is None:
+        return ConnectSmtpResponse(success=False, error="SMTP service not available")
+
+    # Validate provider
+    if req.provider not in ("yahoo", "custom_smtp"):
+        return ConnectSmtpResponse(success=False, error="provider must be 'yahoo' or 'custom_smtp'")
+
+    # Test connection before storing
+    test_result = smtp_service.test_smtp_connection(req.smtp_host, req.smtp_port, req.username, req.password)
+    if not test_result["success"]:
+        return ConnectSmtpResponse(success=False, error=test_result["error"])
+
+    # Encrypt credentials
+    from app.gmail_service import _get_fernet, _encrypt
+    fernet = _get_fernet()
+    if not fernet:
+        return ConnectSmtpResponse(success=False, error="Encryption key not configured (GMAIL_OAUTH_ENCRYPTION_KEY)")
+
+    user_key = get_user_key(request)
+    now = datetime.now(timezone.utc)
+
+    username_enc = _encrypt(fernet, req.username)
+    password_enc = _encrypt(fernet, req.password)
+
+    account = EmailAccount(
+        user_key=user_key,
+        provider=req.provider,
+        email_address=req.email_address,
+        smtp_host=req.smtp_host,
+        smtp_port=req.smtp_port,
+        smtp_username_encrypted=username_enc,
+        smtp_password_encrypted=password_enc,
+        imap_host=req.imap_host,
+        imap_port=req.imap_port,
+        is_active=0,
+        created_at=now,
+        updated_at=now,
+    )
+    db.add(account)
+    db.commit()
+    db.refresh(account)
+
+    return ConnectSmtpResponse(success=True, account=_to_account_read(account))
+
+
+@app.get("/api/email-accounts/connect/google/start")
+def google_connect_start(request: Request):
+    """Start Google OAuth flow — returns {url} or {error}."""
+    user_key = get_user_key(request)
+    if gmail_service is None:
+        return {"error": "gmail_service module not available"}
+    url = gmail_service.build_auth_url(user_key)
+    if not url:
+        return {"error": "Google OAuth credentials not configured (GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI)"}
+    return {"url": url}
+
+
+@app.get("/api/email-accounts/connect/google/callback", response_class=HTMLResponse)
+def google_connect_callback(
+    code: str = Query(...),
+    state: str = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Google OAuth callback — mirrors existing /api/gmail/auth/callback, also creates EmailAccount row."""
+    user_key = state or "local_user"
+    if gmail_service is None:
+        return HTMLResponse("<h1>gmail_service not available</h1>", status_code=503)
+
+    email_address = gmail_service.exchange_code(db, code, user_key)
+    if not email_address:
+        return HTMLResponse("""<!DOCTYPE html>
+<html><head><title>Gmail Connection Failed</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:50px">
+  <h1>Gmail Connection Failed</h1>
+  <p>Could not exchange code for tokens. Please try again.</p>
+</body></html>""", status_code=400)
+
+    # Upsert an EmailAccount row for this Google account
+    now = datetime.now(timezone.utc)
+    existing = db.query(EmailAccount).filter(
+        EmailAccount.user_key == user_key,
+        EmailAccount.provider == "gmail",
+    ).first()
+    if not existing:
+        row = db.query(GmailToken).filter(GmailToken.user_key == user_key).first()
+        if row:
+            # Deactivate others if this is first account
+            has_active = db.query(EmailAccount).filter(
+                EmailAccount.user_key == user_key, EmailAccount.is_active == 1
+            ).first()
+            ea = EmailAccount(
+                user_key=user_key,
+                provider="gmail",
+                email_address=email_address,
+                access_token_encrypted=row.access_token_encrypted,
+                refresh_token_encrypted=row.refresh_token_encrypted,
+                token_expiry=row.token_expiry,
+                is_active=0 if has_active else 1,
+                created_at=row.created_at,
+                updated_at=now,
+            )
+            db.add(ea)
+            try:
+                db.commit()
+            except Exception:
+                db.rollback()
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head><title>Gmail Connected</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:50px">
+  <h1>Gmail Connected!</h1>
+  <p>Connected as <strong>{email_address}</strong></p>
+  <p>You can close this window and return to ADINA.</p>
+</body></html>""")
+
+
+@app.get("/api/email-accounts/connect/outlook/start")
+def outlook_connect_start(request: Request):
+    """Start Microsoft OAuth flow — returns {url} or {error}."""
+    user_key = get_user_key(request)
+    if outlook_service is None:
+        return {"error": "outlook_service module not available"}
+    if not outlook_service.is_configured():
+        return {"error": "Outlook OAuth not configured (OUTLOOK_CLIENT_ID / OUTLOOK_CLIENT_SECRET / OUTLOOK_REDIRECT_URI)"}
+    url = outlook_service.build_auth_url(user_key)
+    if not url:
+        return {"error": "Could not build Outlook auth URL"}
+    return {"url": url}
+
+
+@app.get("/api/email-accounts/connect/outlook/callback", response_class=HTMLResponse)
+def outlook_connect_callback(
+    code: str = Query(...),
+    state: str = Query(None),
+    db: Session = Depends(get_db),
+):
+    """Microsoft OAuth callback — exchanges code, stores encrypted tokens, creates EmailAccount row."""
+    user_key = state or "local_user"
+    if outlook_service is None:
+        return HTMLResponse("<h1>outlook_service not available</h1>", status_code=503)
+
+    email_address = outlook_service.exchange_code(db, code, user_key)
+    if not email_address:
+        return HTMLResponse("""<!DOCTYPE html>
+<html><head><title>Outlook Connection Failed</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:50px">
+  <h1>Outlook Connection Failed</h1>
+  <p>Could not exchange code for tokens. Please try again.</p>
+</body></html>""", status_code=400)
+
+    # Set as active if no active account yet
+    has_active = db.query(EmailAccount).filter(
+        EmailAccount.user_key == user_key, EmailAccount.is_active == 1
+    ).first()
+    if not has_active:
+        new_acc = db.query(EmailAccount).filter(
+            EmailAccount.user_key == user_key, EmailAccount.provider == "outlook",
+            EmailAccount.email_address == email_address,
+        ).first()
+        if new_acc:
+            new_acc.is_active = 1
+            db.commit()
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head><title>Outlook Connected</title></head>
+<body style="font-family:sans-serif;text-align:center;padding:50px">
+  <h1>Outlook Connected!</h1>
+  <p>Connected as <strong>{email_address}</strong></p>
+  <p>You can close this window and return to ADINA.</p>
+</body></html>""")
+
+
+@app.post("/api/email/send", response_model=GeneralSendResponse)
+def send_email_general(req: GeneralSendRequest, request: Request, db: Session = Depends(get_db)):
+    """
+    Send an outreach email from the active (or specified) connected account.
+
+    Supports Gmail, Outlook, Yahoo, and custom SMTP accounts.
+    If no account is connected, returns a graceful message (not 500).
+    """
+    if settings.demo_mode:
+        return GeneralSendResponse(success=False, error="Demo mode: sending disabled")
+
+    user_key = get_user_key(request)
+
+    # Determine sending account
+    if req.from_account_id:
+        account = db.query(EmailAccount).filter(
+            EmailAccount.id == req.from_account_id,
+            EmailAccount.user_key == user_key,
+        ).first()
+        if not account:
+            return GeneralSendResponse(success=False, error="Specified account not found")
+    else:
+        account = _get_active_account(db, user_key)
+
+    if not account:
+        # Fallback: try legacy Gmail
+        if _is_gmail_connected(db, user_key):
+            result = _send_email_for_user(db, user_key, req.to, req.subject, req.body)
+            if result["success"]:
+                increment_daily_email_count(db)
+            return GeneralSendResponse(
+                success=result["success"],
+                message_id=result.get("message_id"),
+                provider="gmail",
+                error=result.get("error"),
+            )
+        return GeneralSendResponse(
+            success=False,
+            error="No connected sending account. Connect one in Settings first.",
+        )
+
+    daily_count = get_daily_email_count(db)
+    if daily_count >= DAILY_SEND_LIMIT:
+        return GeneralSendResponse(success=False, error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached")
+
+    result = _send_via_account(db, account, req.to, req.subject, req.body)
+    if result["success"]:
+        increment_daily_email_count(db)
+    return GeneralSendResponse(
+        success=result["success"],
+        message_id=result.get("message_id"),
+        provider=account.provider,
+        error=result.get("error"),
+    )
+
+
+@app.post("/api/email/reply", response_model=GeneralSendResponse)
+def reply_email_general(req: GeneralReplyRequest, request: Request, db: Session = Depends(get_db)):
+    """
+    Send a reply from the active (or specified) connected account.
+
+    Saves send record against the lead. For SMTP providers without thread support,
+    sends as a regular email with the provided subject (caller should prefix 'Re:').
+    """
+    if settings.demo_mode:
+        return GeneralSendResponse(success=False, error="Demo mode: sending disabled")
+
+    user_key = get_user_key(request)
+
+    lead = db.query(Lead).filter(Lead.id == req.lead_id).first()
+    if not lead:
+        return GeneralSendResponse(success=False, error="Lead not found")
+
+    # Determine sending account
+    if req.from_account_id:
+        account = db.query(EmailAccount).filter(
+            EmailAccount.id == req.from_account_id,
+            EmailAccount.user_key == user_key,
+        ).first()
+        if not account:
+            return GeneralSendResponse(success=False, error="Specified account not found")
+    else:
+        account = _get_active_account(db, user_key)
+
+    if not account:
+        # Fallback: try legacy Gmail
+        if _is_gmail_connected(db, user_key):
+            result = _send_email_for_user(db, user_key, req.to, req.subject, req.body)
+        else:
+            return GeneralSendResponse(
+                success=False,
+                error="No connected sending account. Connect one in Settings first.",
+            )
+        provider = "gmail"
+    else:
+        daily_count = get_daily_email_count(db)
+        if daily_count >= DAILY_SEND_LIMIT:
+            return GeneralSendResponse(success=False, error=f"Daily send limit ({DAILY_SEND_LIMIT}) reached")
+        result = _send_via_account(db, account, req.to, req.subject, req.body)
+        provider = account.provider
+
+    if result["success"]:
+        lead.status = "sent"
+        lead.contact_email = req.to
+        sent_email = SentEmail(
+            lead_id=lead.id,
+            to_email=req.to,
+            subject=req.subject,
+            body=req.body,
+            gmail_message_id=result.get("message_id"),
+            sent_date=date.today(),
+        )
+        db.add(sent_email)
+        increment_daily_email_count(db)
+        db.commit()
+
+    return GeneralSendResponse(
+        success=result["success"],
+        message_id=result.get("message_id"),
+        provider=provider,
+        error=result.get("error"),
+    )

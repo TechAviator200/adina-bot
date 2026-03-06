@@ -485,6 +485,7 @@ export default function LeadsPage() {
           title: c.title ?? null,
           email: c.email ?? null,
           linkedin_url: c.linkedin_url ?? null,
+          phone: c.phone ?? null,
           source: c.source,
         }))
         // Primary contact: first contact with an email

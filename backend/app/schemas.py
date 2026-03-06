@@ -268,6 +268,7 @@ class ExecutiveContact(BaseModel):
     title: Optional[str] = None
     email: Optional[str] = None
     linkedin_url: Optional[str] = None
+    phone: Optional[str] = None
     source: str  # "hunter" or "snov"
 
 
@@ -283,6 +284,7 @@ class ProfileContact(BaseModel):
     title: Optional[str] = None
     email: Optional[str] = None
     linkedin_url: Optional[str] = None
+    phone: Optional[str] = None
     source: Optional[str] = None
 
 
@@ -331,3 +333,76 @@ class ImportCompaniesResponse(BaseModel):
     imported: int
     skipped: int
     leads: List[LeadRead]
+
+
+# ---------------------------------------------------------------------------
+# Email Account (Connected Sending Accounts)
+# ---------------------------------------------------------------------------
+
+class EmailAccountRead(BaseModel):
+    id: int
+    user_key: str
+    provider: str  # gmail | outlook | yahoo | custom_smtp
+    email_address: Optional[str] = None
+    smtp_host: Optional[str] = None
+    smtp_port: Optional[int] = None
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = None
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class EmailAccountsStatusResponse(BaseModel):
+    accounts: List[EmailAccountRead]
+    active_account: Optional[EmailAccountRead] = None
+
+
+class SetActiveAccountRequest(BaseModel):
+    account_id: int
+
+
+class DisconnectAccountRequest(BaseModel):
+    account_id: int
+
+
+class ConnectSmtpRequest(BaseModel):
+    provider: str  # yahoo | custom_smtp
+    email_address: str
+    smtp_host: str
+    smtp_port: int = 587
+    username: str
+    password: str
+    imap_host: Optional[str] = None
+    imap_port: Optional[int] = None
+
+
+class ConnectSmtpResponse(BaseModel):
+    success: bool
+    account: Optional[EmailAccountRead] = None
+    error: Optional[str] = None
+
+
+class GeneralSendRequest(BaseModel):
+    to: str
+    subject: str
+    body: str
+    from_account_id: Optional[int] = None
+
+
+class GeneralSendResponse(BaseModel):
+    success: bool
+    message_id: Optional[str] = None
+    provider: Optional[str] = None
+    error: Optional[str] = None
+
+
+class GeneralReplyRequest(BaseModel):
+    lead_id: int
+    to: str
+    subject: str
+    body: str
+    from_account_id: Optional[int] = None

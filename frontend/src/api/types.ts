@@ -28,6 +28,7 @@ export interface ProfileContact {
   title: string | null
   email: string | null
   linkedin_url: string | null
+  phone: string | null
   source: string | null
 }
 
@@ -175,6 +176,7 @@ export interface ExecutiveContact {
   title: string | null
   email: string | null
   linkedin_url: string | null
+  phone: string | null
   source: string
 }
 
@@ -226,4 +228,49 @@ export interface DiscoverLeadsResponse {
   duplicates: number
   leads: DiscoveredLead[]
   message: string | null
+}
+
+// Email Account (Connected Sending Accounts)
+
+export interface EmailAccount {
+  id: number
+  user_key: string
+  provider: 'gmail' | 'outlook' | 'yahoo' | 'custom_smtp'
+  email_address: string | null
+  smtp_host: string | null
+  smtp_port: number | null
+  imap_host: string | null
+  imap_port: number | null
+  is_active: boolean
+  created_at: string
+  updated_at: string
+}
+
+export interface EmailAccountsStatusResponse {
+  accounts: EmailAccount[]
+  active_account: EmailAccount | null
+}
+
+export interface ConnectSmtpRequest {
+  provider: 'yahoo' | 'custom_smtp'
+  email_address: string
+  smtp_host: string
+  smtp_port: number
+  username: string
+  password: string
+  imap_host?: string
+  imap_port?: number
+}
+
+export interface ConnectSmtpResponse {
+  success: boolean
+  account: EmailAccount | null
+  error: string | null
+}
+
+export interface GeneralSendResponse {
+  success: boolean
+  message_id: string | null
+  provider: string | null
+  error: string | null
 }

@@ -113,3 +113,30 @@ class CompanyDiscoveryCache(Base):
     results_json = Column(Text, nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     expires_at = Column(DateTime(timezone=True), index=True, nullable=False)
+
+
+class EmailAccount(Base):
+    """Connected sending accounts (Gmail OAuth, Outlook OAuth, SMTP).
+    Tokens and passwords are Fernet-encrypted at rest."""
+    __tablename__ = "email_accounts"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_key = Column(String, nullable=False, index=True)
+    provider = Column(String, nullable=False)  # gmail | outlook | yahoo | custom_smtp
+    email_address = Column(String, nullable=True)
+    # OAuth fields (Gmail, Outlook)
+    access_token_encrypted = Column(Text, nullable=True)
+    refresh_token_encrypted = Column(Text, nullable=True)
+    token_expiry = Column(DateTime(timezone=True), nullable=True)
+    # SMTP fields (Yahoo, custom)
+    smtp_host = Column(String, nullable=True)
+    smtp_port = Column(Integer, nullable=True)
+    smtp_username_encrypted = Column(Text, nullable=True)
+    smtp_password_encrypted = Column(Text, nullable=True)
+    # IMAP (optional, for future use)
+    imap_host = Column(String, nullable=True)
+    imap_port = Column(Integer, nullable=True)
+    # State
+    is_active = Column(Integer, default=0)  # 1 = active sending account
+    created_at = Column(DateTime(timezone=True), nullable=False)
+    updated_at = Column(DateTime(timezone=True), nullable=False)

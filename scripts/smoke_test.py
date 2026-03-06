@@ -295,6 +295,89 @@ def main():
         else:
             results.append(("Places returns 200 with message or data", "FAIL", 200, str(body)[:60]))
 
+    # 14. Email accounts status — returns 200 (never 500)
+    ea_resp = test_endpoint(
+        "GET /api/email-accounts/status (200 always)",
+        "GET",
+        "/api/email-accounts/status",
+        headers=HEADERS,
+        expect_status=(200,)
+    )
+    if ea_resp and isinstance(ea_resp.get("body"), dict):
+        body = ea_resp["body"]
+        if "accounts" in body:
+            accts = body.get("accounts", [])
+            results.append(("Email accounts status has accounts list", "PASS", 200,
+                            f"{len(accts)} accounts"))
+        else:
+            results.append(("Email accounts status has accounts list", "FAIL", 200, str(body)[:60]))
+
+    # 15. Send endpoint — graceful when no account connected (not 500)
+    send_resp = test_endpoint(
+        "POST /api/email/send (graceful when no account)",
+        "POST",
+        "/api/email/send",
+        headers=HEADERS,
+        json_data={"to": "test@example.com", "subject": "Test", "body": "Test body"},
+        expect_status=(200,)
+    )
+    if send_resp and isinstance(send_resp.get("body"), dict):
+        body = send_resp["body"]
+        if "success" in body:
+            results.append(("Send endpoint returns success field", "PASS", 200,
+                            f"success={body['success']}"))
+        else:
+            results.append(("Send endpoint returns success field", "FAIL", 200, str(body)[:60]))
+
+    # 16. Lead profile contacts include phone key (null allowed)
+    if lead_id:
+        # Re-use profile from test 9
+        profile_phone_resp = test_endpoint(
+            f"GET /api/leads/{lead_id}/profile (contacts have phone key)",
+            "GET",
+            f"/api/leads/{lead_id}/profile",
+            headers=HEADERS,
+            expect_status=(200,)
+        )
+        if profile_phone_resp and isinstance(profile_phone_resp.get("body"), dict):
+            p = profile_phone_resp["body"]
+            contacts = p.get("contacts", [])
+            if contacts:
+                first = contacts[0]
+                if "phone" in first:
+                    results.append(("Lead profile contact has phone key", "PASS", 200,
+                                    f"phone={first['phone']}"))
+                else:
+                    results.append(("Lead profile contact has phone key", "FAIL", 200,
+                                    "Missing 'phone' key in contact"))
+            else:
+                results.append(("Lead profile contact has phone key", "PASS", "SKIP",
+                                "No contacts to check"))
+
+    # 17. Company contacts endpoint returns phone key
+    contacts_phone_resp = test_endpoint(
+        "POST /api/companies/stripe.com/contacts (phone key in response)",
+        "POST",
+        "/api/companies/stripe.com/contacts",
+        headers=HEADERS,
+        json_data={"domain": "stripe.com", "source": "hunter"},
+        expect_status=(200,)
+    )
+    if contacts_phone_resp and isinstance(contacts_phone_resp.get("body"), dict):
+        body = contacts_phone_resp["body"]
+        contacts = body.get("contacts", [])
+        if contacts:
+            first = contacts[0]
+            if "phone" in first:
+                results.append(("Company contacts response has phone key", "PASS", 200,
+                                f"phone={first['phone']}"))
+            else:
+                results.append(("Company contacts response has phone key", "FAIL", 200,
+                                "Missing 'phone' key in contact"))
+        else:
+            results.append(("Company contacts phone key (no contacts)", "PASS", 200,
+                            "No contacts returned (provider may not be configured)"))
+
     # Print results table
     print()
     print("=" * 80)
